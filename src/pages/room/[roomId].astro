@@ -1,0 +1,11 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import RoomApp from '../../components/RoomApp';
+
+const { roomId = '' } = Astro.params;
+if (!/^[a-z2-9]{12}$/.test(roomId)) return Astro.redirect('/404');
+---
+
+<BaseLayout title="双人默契卡 · 一起揭晓">
+  <RoomApp roomId={roomId} client:load />
+</BaseLayout>

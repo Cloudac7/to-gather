@@ -16,22 +16,12 @@
       "database_name": "to-gather",
       "database_id": "ca27857a-7c0f-462b-8399-21cd02eae9bc",
       "migrations_dir": "migrations"
-    },
-    {
-      "binding": "to_gather",
-      "database_name": "to-gather",
-      "database_id": "ca27857a-7c0f-462b-8399-21cd02eae9bc",
-      "remote": true
     }
   ],
   "r2_buckets": [
     {
       "binding": "AVATARS",
       "bucket_name": "to-gather-media"
-    },
-    {
-      "bucket_name": "to-gather-media",
-      "binding": "to_gather_media"
     }
   ],
   "durable_objects": {

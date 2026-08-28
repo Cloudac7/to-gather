@@ -28,6 +28,10 @@
     {
       "binding": "AVATARS",
       "bucket_name": "to-gather-media"
+    },
+    {
+      "bucket_name": "to-gather-media",
+      "binding": "to_gather_media"
     }
   ],
   "durable_objects": {

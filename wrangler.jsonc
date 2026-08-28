@@ -3,7 +3,9 @@
   "name": "to-gather",
   "main": "./src/worker.ts",
   "compatibility_date": "2026-08-13",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
   "assets": {
     "binding": "ASSETS",
     "directory": "./dist"
@@ -12,8 +14,14 @@
     {
       "binding": "DB",
       "database_name": "to-gather",
-      "database_id": "replace-with-production-d1-id",
+      "database_id": "ca27857a-7c0f-462b-8399-21cd02eae9bc",
       "migrations_dir": "migrations"
+    },
+    {
+      "binding": "to_gather",
+      "database_name": "to-gather",
+      "database_id": "ca27857a-7c0f-462b-8399-21cd02eae9bc",
+      "remote": true
     }
   ],
   "r2_buckets": [
@@ -33,11 +41,15 @@
   "migrations": [
     {
       "tag": "v1",
-      "new_sqlite_classes": ["RoomCoordinator"]
+      "new_sqlite_classes": [
+        "RoomCoordinator"
+      ]
     }
   ],
   "triggers": {
-    "crons": ["17 * * * *"]
+    "crons": [
+      "17 * * * *"
+    ]
   },
   "vars": {
     "APP_ENV": "production"

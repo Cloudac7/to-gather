@@ -152,9 +152,16 @@ export function calculateAnswerCellLayout(
     const imageTextGap = hasText ? (compact ? 8 : 10) : 0;
     const textHeight = maxTextLines * textLineHeight;
     const availableImageHeight = height - imageTop - bottomPadding - imageTextGap - textHeight;
-    const maxImageHeight = height >= 220 ? (compact ? 112 : 132) : Math.max(42, height - imageTop - bottomPadding);
+    const maxImageHeight = hasText
+      ? height >= 220
+        ? compact
+          ? 112
+          : 132
+        : Math.max(42, height - imageTop - bottomPadding)
+      : availableImageHeight;
     const imageHeight = Math.max(34, Math.min(maxImageHeight, availableImageHeight));
-    const imageWidth = Math.min(width - padding * 2, compact ? 140 : width >= 400 ? 220 : 168);
+    const maxImageWidth = hasText ? (compact ? 140 : width >= 400 ? 220 : 168) : width - padding * 2;
+    const imageWidth = Math.min(width - padding * 2, maxImageWidth);
     return {
       padding,
       textTop: imageTop + imageHeight + imageTextGap,

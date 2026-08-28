@@ -193,10 +193,6 @@ function drawPortrait(
   ctx.font = "900 32px 'Songti SC', 'STSong', serif";
   ctx.textBaseline = 'middle';
   ctx.fillText(chars(person.nickname, 12), x + 22, y + height - 38);
-  ctx.font = '800 15px system-ui, sans-serif';
-  ctx.textAlign = 'right';
-  ctx.fillText(`${person.slot} 号`, x + width - 22, y + height - 38);
-  ctx.textAlign = 'left';
   ctx.restore();
 }
 
@@ -233,24 +229,28 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   ctx.fillStyle = INK;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  ctx.font = "900 62px 'Songti SC', 'STSong', serif";
+  ctx.font = "900 62px 'Noto Serif SC', 'Songti SC', 'STSong', serif";
   ctx.fillText(chars(input.template.title, 24), WIDTH / 2, 38);
   ctx.font = '700 23px system-ui, sans-serif';
   ctx.fillText(chars(input.template.subtitle, 40), WIDTH / 2, 112);
   ctx.textAlign = 'left';
 
+  // The reference card uses one strict module: six equal columns across the
+  // pair, with each portrait occupying a 2 × 2 square. Keeping every answer
+  // cell on that module prevents text or uploaded images from warping the grid.
   const left = 50;
-  const half = 750;
-  const topY = 160;
-  const topHeight = 210;
-  const middleY = 370;
-  const middleHeight = 320;
-  const bottomY = 690;
-  const bottomHeight = 210;
-  const messageY = 900;
-  const messageHeight = 220;
-  const cellWidth = half / 3;
-  const sideWidth = 190;
+  const cellSize = 250;
+  const half = cellSize * 3;
+  const topY = 150;
+  const topHeight = cellSize;
+  const middleY = topY + topHeight;
+  const middleHeight = cellSize * 2;
+  const bottomY = middleY + middleHeight;
+  const bottomHeight = cellSize;
+  const messageY = bottomY + bottomHeight;
+  const messageHeight = 150;
+  const cellWidth = cellSize;
+  const sideWidth = cellSize;
 
   const topKeys: AnswerFieldKey[] = ['favoriteAnimal', 'favoriteColor', 'favoritePerson'];
   const sideKeys: AnswerFieldKey[] = ['favoriteSong', 'mbti'];
@@ -258,7 +258,8 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
 
   for (const [personIndex, person] of [input.host, input.guest].entries()) {
     const baseX = left + personIndex * half;
-    topKeys.forEach((key, index) => {
+    const orderedTopKeys = personIndex === 0 ? topKeys : [...topKeys].reverse();
+    orderedTopKeys.forEach((key, index) => {
       drawAnswerCell(ctx, person, input.template, key, images, baseX + index * cellWidth, topY, cellWidth, topHeight);
     });
     const sideX = personIndex === 0 ? baseX : baseX + half - sideWidth;
@@ -273,7 +274,7 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
         middleY + index * (middleHeight / 2),
         sideWidth,
         middleHeight / 2,
-        true,
+        false,
       );
     });
     const portraitX = personIndex === 0 ? baseX + sideWidth : baseX;
@@ -312,7 +313,7 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   ctx.lineTo(WIDTH / 2, messageY + messageHeight);
   ctx.stroke();
 
-  const footerY = 1165;
+  const footerY = 1318;
   ctx.fillStyle = INK;
   roundedRect(ctx, 70, footerY + 30, 92, 92, 0);
   ctx.fill();
@@ -330,11 +331,11 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   drawTextLines(ctx, '把喜欢、期待和想说的话，做成只属于你们的双人卡片。', 190, footerY + 92, 850, 2, 34);
   ctx.font = '800 17px system-ui, sans-serif';
   ctx.fillStyle = '#706d65';
-  ctx.fillText('TOGETHER CARD · 30 DAYS', 190, footerY + 180);
+  ctx.fillText('TO-GATHER · 30 DAYS', 190, footerY + 176);
 
-  const qrX = 1200;
-  const qrY = footerY + 12;
-  const qrSize = 300;
+  const qrX = 1300;
+  const qrY = footerY + 8;
+  const qrSize = 200;
   ctx.fillStyle = PAPER;
   ctx.strokeStyle = INK;
   ctx.lineWidth = 4;
@@ -357,14 +358,14 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.font = '800 20px system-ui, sans-serif';
-    ctx.fillText('确认公开后', qrX + qrSize / 2, qrY + 128);
-    ctx.fillText('生成二维码', qrX + qrSize / 2, qrY + 158);
+    ctx.fillText('确认公开后', qrX + qrSize / 2, qrY + 82);
+    ctx.fillText('生成二维码', qrX + qrSize / 2, qrY + 112);
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillStyle = INK;
-  ctx.font = '800 19px system-ui, sans-serif';
-  ctx.fillText('扫码查看完整结果，创建你们的默契卡', qrX + qrSize / 2, qrY + qrSize + 18);
+  ctx.font = '800 16px system-ui, sans-serif';
+  ctx.fillText('扫码查看完整结果', qrX + qrSize / 2, qrY + qrSize + 12);
 
   for (const image of images.values()) image.bitmap.close();
   return new Promise((resolve, reject) => {

@@ -201,7 +201,7 @@ function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: boolean;
 
   return (
     <main class="join-page">
-      <a class="brand floating-brand" href="/"><span class="brand-mark">两</span><span>TOGETHER CARD</span></a>
+      <a class="brand floating-brand" href="/"><span class="brand-mark">两</span><span>TO-GATHER</span></a>
       <section class="join-visual" aria-hidden="true">
         <div class="portrait-box">1</div>
         <div class="join-line"><span>?</span></div>
@@ -271,7 +271,7 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, onDismissSecr
   return (
     <main class="room-page">
       <header class="room-header">
-        <a class="brand" href="/"><span class="brand-mark">两</span><span>TOGETHER CARD</span></a>
+        <a class="brand" href="/"><span class="brand-mark">两</span><span>TO-GATHER</span></a>
         <div class="room-meta">
           <span>ROUND {String(state.roundNumber).padStart(2, '0')}</span>
           <span class="status-dot"><i class={onlineGuests > 0 || Boolean(host && online.has(host.id)) ? 'online' : ''}></i>{statusText}</span>
@@ -345,7 +345,7 @@ function QrCard({ value, roomId }: { value: string; roomId: string }) {
       {src ? <img src={src} alt="房间邀请二维码" /> : <div class="qr-placeholder" />}
       <span>SCAN TO JOIN</span>
       <small>{roomId.toUpperCase()}</small>
-      {src && <a class="text-button" href={src} download={`together-card-${roomId}.png`}>下载二维码</a>}
+      {src && <a class="text-button" href={src} download={`to-gather-${roomId}.png`}>下载二维码</a>}
     </div>
   );
 }

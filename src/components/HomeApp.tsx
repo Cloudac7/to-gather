@@ -64,7 +64,7 @@ export default function HomeApp() {
       <nav class="topbar">
         <a class="brand" href="/" aria-label="双人默契卡首页">
           <span class="brand-mark">两</span>
-          <span>TOGETHER CARD</span>
+          <span>TO-GATHER</span>
         </a>
         <span class="privacy-pill">房间与分享均保留 30 天</span>
       </nav>

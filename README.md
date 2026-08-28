@@ -1,6 +1,6 @@
-# 两个人，原来是这样的
+# To-Gather：两个人，原来是这样的
 
-一个移动端优先的私密默契卡。一号创建房间后可立即填写，并用同一链接、二维码和加入码邀请最多 20 位二号；每个人独立发布自己的结果。双方发布后可以生成带二维码的 `1600 × 1600` PNG 和固定有效 30 天的公开结果快照。
+To-Gather 取 `together` 的谐音，是一个移动端优先的私密默契卡。一号创建房间后可立即填写，并用同一链接、二维码和加入码邀请最多 20 位二号；每个人独立发布自己的结果。双方发布后可以生成带二维码的 `1600 × 1600` PNG 和固定有效 30 天的公开结果快照。
 
 ## 技术栈
 
@@ -23,10 +23,10 @@
 
 ## 部署
 
-1. 在 Cloudflare 创建名为 `together-card` 的 D1 数据库和 `together-card-avatars` R2 bucket。
+1. 在 Cloudflare 创建名为 `to-gather` 的 D1 数据库和 `to-gather-media` R2 bucket。
 2. 将 `wrangler.jsonc` 中的 `database_id` 替换为真实 D1 ID。
 3. 写入生产 secret：`npx wrangler secret put AUTH_PEPPER`。
-4. 执行远程 migration：`npx wrangler d1 migrations apply together-card --remote`。
+4. 执行远程 migration：`npx wrangler d1 migrations apply to-gather --remote`。
 5. 构建并部署：`npm run build && npx wrangler deploy`。
 
 生产环境应使用自定义域名，并在 Cloudflare Dashboard 中为 Worker 启用日志和告警。定时任务每小时检查并清理已过期分享；房间连续 30 天没有活动后也会删除。

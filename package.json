@@ -1,12 +1,12 @@
 {
-  "name": "together-card",
+  "name": "to-gather",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "node ./scripts/dev.mjs",
     "dev:astro": "astro dev",
-    "db:migrate:local": "wrangler d1 migrations apply together-card --local",
+    "db:migrate:local": "wrangler d1 migrations apply to-gather --local",
     "build": "astro build",
     "preview": "astro preview",
     "check": "astro check",

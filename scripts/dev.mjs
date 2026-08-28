@@ -13,7 +13,7 @@ mkdirSync(logDirectory, { recursive: true });
 console.log('Preparing local D1 database...');
 const migration = spawnSync(
   process.execPath,
-  [wranglerBin, 'd1', 'migrations', 'apply', 'together-card', '--local'],
+  [wranglerBin, 'd1', 'migrations', 'apply', 'to-gather', '--local'],
   {
     cwd: projectRoot,
     stdio: 'inherit',

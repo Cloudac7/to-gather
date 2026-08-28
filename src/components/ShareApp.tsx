@@ -47,7 +47,7 @@ function ShareView({ state }: { state: PublicShareState }) {
   return (
     <main class="public-share-page">
       <header class="public-share-header">
-        <a class="brand" href="/"><span class="brand-mark">两</span><span>TOGETHER CARD</span></a>
+        <a class="brand" href="/"><span class="brand-mark">两</span><span>TO-GATHER</span></a>
         <span>分享将在 {new Date(state.expiresAt).toLocaleDateString('zh-CN')} 到期</span>
       </header>
       <section class="public-poster-section">

@@ -1,6 +1,6 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "together-card",
+  "name": "to-gather",
   "main": "./src/worker.ts",
   "compatibility_date": "2026-08-13",
   "compatibility_flags": ["nodejs_compat"],
@@ -11,7 +11,7 @@
   "d1_databases": [
     {
       "binding": "DB",
-      "database_name": "together-card",
+      "database_name": "to-gather",
       "database_id": "replace-with-production-d1-id",
       "migrations_dir": "migrations"
     }
@@ -19,7 +19,7 @@
   "r2_buckets": [
     {
       "binding": "AVATARS",
-      "bucket_name": "together-card-avatars"
+      "bucket_name": "to-gather-media"
     }
   ],
   "durable_objects": {

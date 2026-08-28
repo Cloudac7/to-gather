@@ -4,11 +4,15 @@ import '../styles/global.css';
 interface Props {
   title?: string;
   description?: string;
+  robots?: string;
+  ogImage?: string;
 }
 
 const {
   title = '两个人，原来是这样的',
   description = '一张只属于你们两个人的默契卡。各自填写，双方提交后一起揭晓。',
+  robots,
+  ogImage,
 } = Astro.props;
 ---
 
@@ -18,6 +22,14 @@ const {
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
+    {robots && <meta name="robots" content={robots} />}
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={Astro.url.href} />
+    {ogImage && <meta property="og:image" content={ogImage} />}
+    {ogImage && <meta property="og:image:width" content="1600" />}
+    {ogImage && <meta property="og:image:height" content="1600" />}
     <meta name="theme-color" content="#f4f0e7" />
     <title>{title}</title>
   </head>

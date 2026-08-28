@@ -1,0 +1,14 @@
+---
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import ShareLoader from '../../components/ShareApp';
+
+const { shareId = '' } = Astro.params;
+if (!/^[a-z2-9]{24}$/.test(shareId)) return Astro.redirect('/404');
+const title = '双人默契卡 · 一起揭晓';
+const description = '扫码查看完整结果，创建你们的默契卡。';
+const ogImage = new URL(`/api/shares/${shareId}/poster`, Astro.url.origin).href;
+---
+
+<BaseLayout title={title} description={description} robots="noindex, nofollow, noarchive" ogImage={ogImage}>
+  <ShareLoader shareId={shareId} client:load />
+</BaseLayout>

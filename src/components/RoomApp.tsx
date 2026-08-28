@@ -3,14 +3,20 @@ import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import type {
   AnswerDraft,
+  AnswerFieldKey,
   AuthenticatedRoomState,
   CreateRoomResponse,
+  CreateShareResponse,
   JoinRoomResponse,
   RevealedAnswer,
+  RoomTemplate,
   RoomState,
   ServerEvent,
+  ShareSummary,
 } from '../lib/types';
-import { EMPTY_DRAFT } from '../lib/types';
+import { createEmptyDraft, EMPTY_ANSWER_IMAGES } from '../lib/types';
+import { CARD_FIELDS } from '../lib/card';
+import { generatePoster, type PosterInput, type PosterPerson } from '../lib/poster';
 
 interface Props {
   roomId: string;
@@ -20,21 +26,7 @@ interface ApiError {
   message?: string;
 }
 
-const fields: Array<{
-  key: Exclude<keyof AnswerDraft, 'avatarKey' | 'message'>;
-  label: string;
-  placeholder: string;
-  long?: boolean;
-}> = [
-  { key: 'favoriteAnimal', label: '最喜欢的动物', placeholder: '猫、海獭、卡皮巴拉…' },
-  { key: 'favoriteColor', label: '最喜欢的颜色', placeholder: '落日橙、克莱因蓝…' },
-  { key: 'favoritePerson', label: '最喜欢的人物', placeholder: '真人或虚构人物都可以' },
-  { key: 'favoriteSong', label: '最喜欢的歌', placeholder: '最近循环的那一首' },
-  { key: 'mbti', label: 'MBTI', placeholder: '比如 ENFP（不知道也没关系）' },
-  { key: 'recentProduct', label: '最近买的产品', placeholder: '一件让你想安利或吐槽的东西' },
-  { key: 'dreamActivity', label: '最想和对方一起做的事情', placeholder: '认真说，也可以大胆一点', long: true },
-  { key: 'curiousAbout', label: '想入坑但一直没认真了解的', placeholder: '某项运动、游戏、爱好或知识', long: true },
-];
+const fields = CARD_FIELDS;
 
 async function api<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
@@ -298,9 +290,9 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, onDismissSecr
 
       <FillView state={state} onRefresh={onRefresh} />
 
-      {state.publishedAnswers.length > 0 && <PublishedView state={state} />}
+      {state.publishedAnswers.length > 0 && <PublishedView state={state} onRefresh={onRefresh} />}
 
-      {state.history.length > 0 && <HistoryList roomId={state.roomId} history={state.history} />}
+      {state.history.length > 0 && <HistoryList roomId={state.roomId} history={state.history} template={state.template} />}
     </main>
   );
 }
@@ -360,19 +352,20 @@ function QrCard({ value, roomId }: { value: string; roomId: string }) {
 
 function FillView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefresh: () => Promise<void> }) {
   const me = state.participants.find((person) => person.isMe)!;
-  const [draft, setDraft] = useState<AnswerDraft>(state.ownDraft ?? { ...EMPTY_DRAFT });
+  const [draft, setDraft] = useState<AnswerDraft>(state.ownDraft ?? createEmptyDraft());
   const [version, setVersion] = useState(state.version);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
   const [uploading, setUploading] = useState(false);
+  const [uploadingField, setUploadingField] = useState<AnswerFieldKey | null>(null);
   const submitted = me.submitted;
   const timer = useRef<number | undefined>(undefined);
   const saveChain = useRef<Promise<number>>(Promise.resolve(state.version));
 
   useEffect(() => {
     if (!dirty) {
-      setDraft(state.ownDraft ?? { ...EMPTY_DRAFT });
+      setDraft(state.ownDraft ?? createEmptyDraft());
       setVersion(state.version);
       saveChain.current = Promise.resolve(state.version);
     }
@@ -410,7 +403,7 @@ function FillView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefre
     return () => { if (timer.current) window.clearTimeout(timer.current); };
   }, [draft, dirty, submitted]);
 
-  function update(key: keyof AnswerDraft, value: string) {
+  function update(key: AnswerFieldKey, value: string) {
     setDraft((current) => ({ ...current, [key]: value }));
     setDirty(true);
   }
@@ -437,12 +430,65 @@ function FillView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefre
     }
   }
 
+  async function uploadAnswerImage(field: AnswerFieldKey, file: File) {
+    setUploadingField(field);
+    setError('');
+    try {
+      if (file.size > 8_000_000) throw new Error('原图片不能超过 8MB');
+      if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+        throw new Error('仅支持 JPEG、PNG 或 WebP 图片');
+      }
+      if (dirty) await save(draft);
+      const compressed = await compressAnswerImage(file);
+      const result = await api<{ imageKey: string; version: number }>(
+        `/api/rooms/${state.roomId}/answer-image/${field}`,
+        { method: 'POST', headers: { 'Content-Type': compressed.type }, body: compressed },
+      );
+      setDraft((current) => ({
+        ...current,
+        imageKeys: { ...current.imageKeys, [field]: result.imageKey },
+      }));
+      setVersion(result.version);
+      setDirty(false);
+      saveChain.current = Promise.resolve(result.version);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '答案图片上传失败');
+    } finally {
+      setUploadingField(null);
+    }
+  }
+
+  async function removeAnswerImage(field: AnswerFieldKey) {
+    setUploadingField(field);
+    setError('');
+    try {
+      if (dirty) await save(draft);
+      const result = await api<{ imageKey: null; version: number }>(
+        `/api/rooms/${state.roomId}/answer-image/${field}`,
+        { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) },
+      );
+      setDraft((current) => ({
+        ...current,
+        imageKeys: { ...current.imageKeys, [field]: null },
+      }));
+      setVersion(result.version);
+      setDirty(false);
+      saveChain.current = Promise.resolve(result.version);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '答案图片删除失败');
+    } finally {
+      setUploadingField(null);
+    }
+  }
+
   async function submit() {
-    if (!draft.avatarKey || !Object.entries(draft).some(([key, value]) => key !== 'avatarKey' && Boolean(value))) {
-      setError('请上传头像并至少填写一个答案');
+    const hasText = fields.some((field) => Boolean(draft[field.key])) || Boolean(draft.message);
+    const hasImage = Object.values(draft.imageKeys).some(Boolean);
+    if (!draft.avatarKey || (!hasText && !hasImage)) {
+      setError('请上传头像，并至少填写一段文字或上传一张答案图片');
       return;
     }
-    if (!window.confirm('发布后答案会锁定，并立即对有权限的配对对象可见。确定发布吗？')) return;
+    if (!window.confirm('发布后内容会锁定。双方都发布后，任意一方都可以生成包含昵称、头像、文字和图片的公开分享。确认发布即表示你同意这项规则。')) return;
     try {
       if (dirty) await save(draft);
       await api(`/api/rooms/${state.roomId}/submit`, { method: 'POST' });
@@ -474,26 +520,82 @@ function FillView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefre
         <div class="sheet-fields">
           {fields.map((field, index) => (
             <label class={field.long ? 'field-block field-wide' : 'field-block'} key={field.key}>
-              <span><b>{String(index + 1).padStart(2, '0')}</b>{field.label}</span>
+              <span><b>{String(index + 1).padStart(2, '0')}</b>{state.template.fieldLabels[field.key]}</span>
+              <AnswerImageEditor
+                roomId={state.roomId}
+                field={field.key}
+                imageKey={draft.imageKeys[field.key]}
+                busy={uploadingField === field.key}
+                onFile={(file) => void uploadAnswerImage(field.key, file)}
+                onRemove={() => void removeAnswerImage(field.key)}
+              />
               {field.long ? (
-                <textarea value={draft[field.key]} onInput={(e) => update(field.key, e.currentTarget.value)} maxLength={240} placeholder={field.placeholder} rows={3} />
+                <textarea value={draft[field.key]} onInput={(e) => update(field.key, e.currentTarget.value)} maxLength={field.maxLength} placeholder={`${field.placeholder}（文字可选）`} rows={3} />
               ) : (
-                <input value={draft[field.key]} onInput={(e) => update(field.key, e.currentTarget.value)} maxLength={field.key === 'mbti' ? 16 : field.key === 'recentProduct' ? 120 : 80} placeholder={field.placeholder} />
+                <input value={draft[field.key]} onInput={(e) => update(field.key, e.currentTarget.value)} maxLength={field.maxLength} placeholder={`${field.placeholder}（文字可选）`} />
               )}
             </label>
           ))}
           <label class="field-block field-wide message-field">
-            <span><b>09</b>自由发言（搏击）区</span>
-            <textarea value={draft.message} onInput={(e) => update('message', e.currentTarget.value)} maxLength={500} placeholder="还有什么没被上面的问题问到？" rows={5} />
+            <span><b>09</b>{state.template.fieldLabels.message}</span>
+            <AnswerImageEditor
+              roomId={state.roomId}
+              field="message"
+              imageKey={draft.imageKeys.message}
+              busy={uploadingField === 'message'}
+              onFile={(file) => void uploadAnswerImage('message', file)}
+              onRemove={() => void removeAnswerImage('message')}
+            />
+            <textarea value={draft.message} onInput={(e) => update('message', e.currentTarget.value)} maxLength={500} placeholder="还有什么没被上面的问题问到？（文字可选）" rows={5} />
           </label>
         </div>
       </div>
       {error && <p class="form-error submit-error" role="alert">{error}</p>}
       <div class="submit-row">
         <p>发布前只有你能看到草稿；发布后不能修改。</p>
-        <button class="button button-accent button-large" onClick={submit} disabled={saving || uploading}>发布我的结果 →</button>
+        <button class="button button-accent button-large" onClick={submit} disabled={saving || uploading || Boolean(uploadingField)}>发布我的结果 →</button>
       </div>
     </section>
+  );
+}
+
+function AnswerImageEditor({ roomId, field, imageKey, busy, onFile, onRemove }: {
+  roomId: string;
+  field: AnswerFieldKey;
+  imageKey: string | null;
+  busy: boolean;
+  onFile: (file: File) => void;
+  onRemove: () => void;
+}) {
+  const input = useRef<HTMLInputElement>(null);
+  return (
+    <div class="answer-image-editor">
+      {imageKey ? (
+        <div class="answer-image-preview">
+          <img src={`/api/rooms/${roomId}/media?key=${encodeURIComponent(imageKey)}`} alt="答案配图预览" />
+          <div>
+            <button type="button" class="text-button" onClick={() => input.current?.click()} disabled={busy}>{busy ? '处理中…' : '替换图片'}</button>
+            <button type="button" class="text-button danger" onClick={onRemove} disabled={busy}>删除</button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" class="answer-image-add" onClick={() => input.current?.click()} disabled={busy}>
+          {busy ? '正在处理图片…' : '＋ 插入一张图片'}
+        </button>
+      )}
+      <input
+        ref={input}
+        type="file"
+        accept="image/jpeg,image/png,image/webp"
+        hidden
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          if (file) onFile(file);
+          event.currentTarget.value = '';
+        }}
+        aria-label={`上传 ${field} 的答案图片`}
+      />
+    </div>
   );
 }
 
@@ -524,9 +626,68 @@ async function compressSquare(file: File) {
   return new Promise<Blob>((resolve, reject) => canvas.toBlob((blob) => blob ? resolve(blob) : reject(new Error('图片处理失败')), 'image/webp', 0.82));
 }
 
-function PublishedView({ state }: { state: AuthenticatedRoomState }) {
+function canvasBlob(canvas: HTMLCanvasElement, quality: number) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => (blob ? resolve(blob) : reject(new Error('图片处理失败'))),
+      'image/webp',
+      quality,
+    );
+  });
+}
+
+async function compressAnswerImage(file: File) {
+  const bitmap = await createImageBitmap(file);
+  const maxSide = 1600;
+  let scale = Math.min(1, maxSide / Math.max(bitmap.width, bitmap.height));
+  let quality = 0.84;
+  let blob: Blob | null = null;
+  for (let attempt = 0; attempt < 7; attempt += 1) {
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('当前浏览器无法处理图片');
+    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+    blob = await canvasBlob(canvas, quality);
+    if (blob.size <= 700_000) break;
+    if (quality > 0.58) quality -= 0.08;
+    else scale *= 0.82;
+  }
+  bitmap.close();
+  if (!blob || blob.size > 1_000_000) throw new Error('图片压缩后仍然过大，请换一张图片');
+  return blob;
+}
+
+function roomPosterPerson(roomId: string, answer: RevealedAnswer): PosterPerson {
+  const imageUrls = { ...EMPTY_ANSWER_IMAGES } as Record<AnswerFieldKey, string | null>;
+  for (const [key, imageKey] of Object.entries(answer.answer.imageKeys) as Array<[AnswerFieldKey, string | null]>) {
+    imageUrls[key] = imageKey ? `/api/rooms/${roomId}/media?key=${encodeURIComponent(imageKey)}` : null;
+  }
+  return {
+    nickname: answer.nickname,
+    slot: answer.slot,
+    avatarUrl: answer.answer.avatarKey
+      ? `/api/rooms/${roomId}/media?key=${encodeURIComponent(answer.answer.avatarKey)}`
+      : '',
+    answer: answer.answer,
+    imageUrls,
+  };
+}
+
+function PublishedView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefresh: () => Promise<void> }) {
   const me = state.participants.find((person) => person.isMe)!;
   const sorted = [...state.publishedAnswers].sort((left, right) => left.slot - right.slot);
+  const host = sorted.find((answer) => answer.slot === 1);
+  const [selectedGuest, setSelectedGuest] = useState<RevealedAnswer | null>(null);
+
+  function openForParticipant(participantId: string) {
+    const guest = me.slot === 1
+      ? sorted.find((answer) => answer.slot === 2 && answer.participantId === participantId)
+      : sorted.find((answer) => answer.slot === 2 && answer.participantId === me.id);
+    if (host && guest) setSelectedGuest(guest);
+  }
+
   return (
     <section class="reveal-section">
       <div class="reveal-heading">
@@ -535,32 +696,272 @@ function PublishedView({ state }: { state: AuthenticatedRoomState }) {
         <p>{me.slot === 1 ? '每个二号独立展示；他们彼此看不到对方。' : '这里只有你和一号发布的内容。'}</p>
       </div>
       <div class="published-grid">
-        {sorted.map((answer) => (
-          <RevealedCard roomId={state.roomId} data={answer} key={answer.participantId} />
-        ))}
+        {sorted.map((answer) => {
+          const canCreate = Boolean(
+            host &&
+            ((me.slot === 1 && answer.slot === 2) ||
+              (me.slot === 2 && answer.participantId === me.id && answer.slot === 2)),
+          );
+          return (
+            <div class="published-result" key={answer.participantId}>
+              <RevealedCard roomId={state.roomId} data={answer} template={state.template} />
+              {canCreate && (
+                <button class="button button-dark share-result-button" onClick={() => setSelectedGuest(answer)}>
+                  生成双人卡片 ↗
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
+      <ShareHistory
+        state={state}
+        onRefresh={onRefresh}
+        onRegenerate={(participantId) => openForParticipant(participantId)}
+      />
+      {host && selectedGuest && (
+        <ShareModal
+          state={state}
+          host={host}
+          guest={selectedGuest}
+          onClose={() => setSelectedGuest(null)}
+          onRefresh={onRefresh}
+        />
+      )}
     </section>
   );
 }
 
-function RevealedCard({ roomId, data }: { roomId: string; data: RevealedAnswer }) {
+function RevealedCard({ roomId, data, template }: { roomId: string; data: RevealedAnswer; template: RoomTemplate }) {
+  function answerContent(key: AnswerFieldKey) {
+    const imageKey = data.answer.imageKeys[key];
+    return (
+      <dd>
+        {imageKey && <img class="revealed-answer-image" src={`/api/rooms/${roomId}/media?key=${encodeURIComponent(imageKey)}`} alt={`${template.fieldLabels[key]}的答案配图`} />}
+        <span>{data.answer[key] || (imageKey ? '' : '—')}</span>
+      </dd>
+    );
+  }
   return (
     <article class={`revealed-card slot-${data.slot}`}>
       <header>
-        {data.answer.avatarKey ? <img src={`/api/rooms/${roomId}/avatar?key=${encodeURIComponent(data.answer.avatarKey)}`} alt={`${data.nickname}的头像`} /> : <div class="avatar-fallback">{data.slot}</div>}
+        {data.answer.avatarKey ? <img src={`/api/rooms/${roomId}/media?key=${encodeURIComponent(data.answer.avatarKey)}`} alt={`${data.nickname}的头像`} /> : <div class="avatar-fallback">{data.slot}</div>}
         <div><span>受益（害）者 {data.slot} 号</span><h2>{data.nickname}</h2></div>
       </header>
       <dl>
         {fields.map((field, index) => (
-          <div key={field.key}><dt>{String(index + 1).padStart(2, '0')} {field.label}</dt><dd>{data.answer[field.key] || '—'}</dd></div>
+          <div key={field.key}><dt>{String(index + 1).padStart(2, '0')} {template.fieldLabels[field.key]}</dt>{answerContent(field.key)}</div>
         ))}
-        <div class="message-answer"><dt>09 自由发言（搏击）区</dt><dd>{data.answer.message || '—'}</dd></div>
+        <div class="message-answer"><dt>09 {template.fieldLabels.message}</dt>{answerContent('message')}</div>
       </dl>
     </article>
   );
 }
 
-function HistoryList({ roomId, history }: { roomId: string; history: AuthenticatedRoomState['history'] }) {
+function ShareModal({ state, host, guest, onClose, onRefresh }: {
+  state: AuthenticatedRoomState;
+  host: RevealedAnswer;
+  guest: RevealedAnswer;
+  onClose: () => void;
+  onRefresh: () => Promise<void>;
+}) {
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [result, setResult] = useState<ShareSummary | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [copied, setCopied] = useState(false);
+  const posterInput: PosterInput = {
+    template: state.template,
+    host: roomPosterPerson(state.roomId, host),
+    guest: roomPosterPerson(state.roomId, guest),
+  };
+  const me = state.participants.find((participant) => participant.isMe)!;
+  const pairParticipantId = me.slot === 1 ? guest.participantId : host.participantId;
+
+  useEffect(() => {
+    let stopped = false;
+    let objectUrl = '';
+    setError('');
+    void generatePoster(posterInput)
+      .then((blob) => {
+        if (stopped) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewUrl(objectUrl);
+      })
+      .catch((caught) => setError(caught instanceof Error ? caught.message : '预览生成失败'));
+    return () => {
+      stopped = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [state.roomId, host.participantId, guest.participantId]);
+
+  async function create(forceNew = false) {
+    setBusy(true);
+    setError('');
+    try {
+      const created = await api<CreateShareResponse>(`/api/rooms/${state.roomId}/shares`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pairParticipantId, forceNew }),
+      });
+      let activeShare = created.share;
+      if (created.needsPoster) {
+        const poster = await generatePoster({ ...posterInput, shareUrl: created.share.shareUrl });
+        const uploaded = await api<{ share: ShareSummary }>(
+          `/api/rooms/${state.roomId}/shares/${created.share.id}/poster`,
+          { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: poster },
+        );
+        activeShare = uploaded.share;
+      }
+      setResult(activeShare);
+      await onRefresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '分享生成失败');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function posterBlob() {
+    if (!result?.posterUrl) throw new Error('分享图片尚未生成');
+    const response = await fetch(result.posterUrl);
+    if (!response.ok) throw new Error('分享图片加载失败');
+    return response.blob();
+  }
+
+  async function download() {
+    try {
+      const blob = await posterBlob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `一起揭晓-${host.nickname}-${guest.nickname}.png`;
+      link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '下载失败');
+    }
+  }
+
+  async function copyLink() {
+    if (!result) return;
+    await navigator.clipboard.writeText(result.shareUrl);
+    setCopied(true);
+    window.setTimeout(() => setCopied(false), 1800);
+  }
+
+  async function systemShare() {
+    if (!result) return;
+    try {
+      const file = new File([await posterBlob()], `一起揭晓-${host.nickname}-${guest.nickname}.png`, { type: 'image/png' });
+      const data: ShareData = {
+        title: `${host.nickname} × ${guest.nickname} 的双人卡片`,
+        text: '扫码查看完整结果，创建你们的默契卡',
+        url: result.shareUrl,
+        files: [file],
+      };
+      if (navigator.canShare?.({ files: [file] })) await navigator.share(data);
+      else await navigator.share({ title: data.title, text: data.text, url: data.url });
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'AbortError') return;
+      setError(caught instanceof Error ? caught.message : '系统分享失败');
+    }
+  }
+
+  return (
+    <div class="modal-backdrop share-modal-backdrop" role="presentation">
+      <section class="share-modal paper-panel" role="dialog" aria-modal="true" aria-labelledby="share-modal-title">
+        <button class="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <div class="share-preview-wrap">
+          {result?.posterUrl ? <img src={result.posterUrl} alt="已生成的双人卡片" /> : previewUrl ? <img src={previewUrl} alt="双人卡片本地预览" /> : <div class="poster-loading">正在排版 1600 × 1600 海报…</div>}
+        </div>
+        <div class="share-modal-copy">
+          <span class="eyebrow">{result ? 'SHARE READY / 30 DAYS' : 'LOCAL PREVIEW / PRIVATE'}</span>
+          <h2 id="share-modal-title">{host.nickname} × {guest.nickname}</h2>
+          {result ? (
+            <>
+              <p>公开链接将在 {new Date(result.expiresAt).toLocaleString('zh-CN')} 到期。图片和扫码页面内容保持一致。</p>
+              <div class="share-action-grid">
+                <button class="button button-dark" onClick={() => void download()}>下载 PNG</button>
+                <button class="button" onClick={() => void copyLink()}>{copied ? '已复制 ✓' : '复制链接'}</button>
+                {typeof navigator !== 'undefined' && 'share' in navigator && <button class="button button-accent" onClick={() => void systemShare()}>系统分享</button>}
+              </div>
+              <button class="text-button" onClick={() => void create(true)} disabled={busy}>生成一条新链接</button>
+            </>
+          ) : (
+            <>
+              <p>当前预览只在你的浏览器中生成，尚未公开。确认后会创建一条固定有效 30 天的公开链接和二维码。</p>
+              <div class="public-consent">
+                公开内容包括双方昵称、头像、全部已发布文字和图片。分享页不会被搜索引擎收录。
+              </div>
+              <button class="button button-accent button-large" onClick={() => void create()} disabled={busy || !previewUrl}>
+                {busy ? '正在生成分享…' : '确认公开并生成卡片'}
+              </button>
+            </>
+          )}
+          {error && <p class="form-error" role="alert">{error}</p>}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ShareHistory({ state, onRefresh, onRegenerate }: {
+  state: AuthenticatedRoomState;
+  onRefresh: () => Promise<void>;
+  onRegenerate: (participantId: string) => void;
+}) {
+  const [error, setError] = useState('');
+  if (!state.myShares.length) return null;
+
+  async function revoke(share: ShareSummary) {
+    if (!window.confirm(`撤销与 ${share.pairNickname} 的这条分享？公开图片和完整快照会被删除。`)) return;
+    try {
+      await api(`/api/rooms/${state.roomId}/shares/${share.id}`, { method: 'DELETE' });
+      await onRefresh();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '撤销失败');
+    }
+  }
+
+  async function copy(share: ShareSummary) {
+    await navigator.clipboard.writeText(new URL(share.shareUrl, location.origin).href);
+  }
+
+  const statusLabel: Record<ShareSummary['status'], string> = {
+    pending: '生成中', active: '有效', revoked: '已撤销', expired: '已过期',
+  };
+  return (
+    <section class="share-history">
+      <div><span class="eyebrow">MY SHARES</span><h2>我的分享</h2><p>你只能管理自己创建的链接。</p></div>
+      <div class="share-history-list">
+        {state.myShares.map((share) => (
+          <article key={share.id}>
+            <div>
+              <strong>与 {share.pairNickname}</strong>
+              <small>{new Date(share.createdAt).toLocaleString('zh-CN')} · {statusLabel[share.status]}</small>
+              {share.status === 'active' && <small>到期：{new Date(share.expiresAt).toLocaleString('zh-CN')}</small>}
+            </div>
+            <div class="share-history-actions">
+              {share.status === 'active' ? (
+                <>
+                  <button class="text-button" onClick={() => void copy(share)}>复制链接</button>
+                  {share.posterUrl && <a class="text-button" href={share.posterUrl} download>下载图片</a>}
+                  <button class="text-button danger" onClick={() => void revoke(share)}>撤销</button>
+                </>
+              ) : (
+                <button class="text-button" onClick={() => onRegenerate(share.pairParticipantId)}>重新生成</button>
+              )}
+            </div>
+          </article>
+        ))}
+      </div>
+      {error && <p class="form-error" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function HistoryList({ roomId, history, template }: { roomId: string; history: AuthenticatedRoomState['history']; template: RoomTemplate }) {
   return (
     <section class="history-section">
       <span class="eyebrow">ARCHIVE / PREVIOUS ROUNDS</span>
@@ -569,7 +970,7 @@ function HistoryList({ roomId, history }: { roomId: string; history: Authenticat
         <details key={round.roundNumber}>
           <summary><span>ROUND {String(round.roundNumber).padStart(2, '0')}</span><time>{new Date(round.revealedAt).toLocaleDateString('zh-CN')}</time><b>展开 ＋</b></summary>
           <div class="comparison-grid compact">
-            {round.answers.map((answer) => <RevealedCard roomId={roomId} data={answer} key={answer.participantId} />)}
+            {round.answers.map((answer) => <RevealedCard roomId={roomId} data={answer} template={template} key={answer.participantId} />)}
           </div>
         </details>
       ))}

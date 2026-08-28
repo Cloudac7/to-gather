@@ -3,11 +3,14 @@ import type {
   AuthenticatedRoomState,
   ParticipantView,
   RevealedAnswer,
+  RoomTemplate,
   RoomState,
   RoomStatus,
   RoundHistory,
+  ShareStatus,
+  ShareSummary,
 } from '../lib/types';
-import { EMPTY_DRAFT } from '../lib/types';
+import { createEmptyDraft, DEFAULT_ROOM_TEMPLATE, EMPTY_ANSWER_IMAGES } from '../lib/types';
 import { hashSecret, participantCookieName, readCookie } from '../lib/security';
 
 export interface RoomRow {
@@ -19,6 +22,7 @@ export interface RoomRow {
   created_at: string;
   last_active_at: string;
   expires_at: string;
+  template_json: string;
 }
 
 export interface ParticipantRow {
@@ -71,12 +75,68 @@ export async function touchRoom(db: D1Database, roomId: string) {
     .run();
 }
 
-function parseAnswer(content: string): AnswerDraft {
+export function parseAnswer(content: string): AnswerDraft {
   try {
-    return { ...EMPTY_DRAFT, ...JSON.parse(content) };
+    const parsed = JSON.parse(content) as Partial<AnswerDraft>;
+    return {
+      ...createEmptyDraft(),
+      ...parsed,
+      imageKeys: { ...EMPTY_ANSWER_IMAGES, ...(parsed.imageKeys ?? {}) },
+    };
   } catch {
-    return { ...EMPTY_DRAFT };
+    return createEmptyDraft();
   }
+}
+
+export function parseRoomTemplate(content: string | null | undefined): RoomTemplate {
+  try {
+    const parsed = JSON.parse(content ?? '') as Partial<RoomTemplate>;
+    return {
+      ...DEFAULT_ROOM_TEMPLATE,
+      ...parsed,
+      fieldLabels: { ...DEFAULT_ROOM_TEMPLATE.fieldLabels, ...(parsed.fieldLabels ?? {}) },
+    };
+  } catch {
+    return { ...DEFAULT_ROOM_TEMPLATE, fieldLabels: { ...DEFAULT_ROOM_TEMPLATE.fieldLabels } };
+  }
+}
+
+interface ShareSummaryRow {
+  id: string;
+  pair_participant_id: string;
+  pair_nickname: string | null;
+  status: ShareStatus;
+  created_at: string;
+  expires_at: string;
+  poster_key: string | null;
+}
+
+async function getMyShares(env: Env, roomId: string, participantId: string): Promise<ShareSummary[]> {
+  const result = await env.DB.prepare(
+    `SELECT s.id, s.pair_participant_id, p.nickname AS pair_nickname, s.status,
+      s.created_at, s.expires_at, s.poster_key
+     FROM shares s
+     LEFT JOIN participants p ON p.id = s.pair_participant_id
+     WHERE s.room_id = ? AND s.owner_participant_id = ? AND s.status != 'pending'
+     ORDER BY s.created_at DESC
+     LIMIT 50`,
+  )
+    .bind(roomId, participantId)
+    .all<ShareSummaryRow>();
+  const now = nowIso();
+  return result.results.map((row) => {
+    const status: ShareStatus = row.status === 'active' && row.expires_at <= now ? 'expired' : row.status;
+    return {
+      id: row.id,
+      pairParticipantId: row.pair_participant_id,
+      pairNickname: row.pair_nickname ?? '原配对对象',
+      status,
+      createdAt: row.created_at,
+      expiresAt: row.expires_at,
+      shareUrl: `/share/${row.id}`,
+      posterUrl: status === 'active' && row.poster_key ? `/api/shares/${row.id}/poster` : null,
+    };
+  });
 }
 
 export async function buildRoomState(
@@ -98,7 +158,8 @@ export async function buildRoomState(
   const people = peopleResult.results;
 
   if (!participant) {
-    return { access: 'joinable', roomId };
+    const guestCount = people.filter((person) => person.slot === 2).length;
+    return { access: guestCount >= 20 ? 'full' : 'joinable', roomId };
   }
 
   // 一号可以管理整个房间；每个二号只和一号构成独立配对，
@@ -176,10 +237,12 @@ export async function buildRoomState(
     roundNumber: room.current_round,
     expiresAt: room.expires_at,
     version: ownAnswer?.version ?? 0,
+    template: parseRoomTemplate(room.template_json),
     participants: participantViews,
-    ownDraft: ownAnswer?.submitted_at ? null : ownAnswer ? parseAnswer(ownAnswer.content_json) : { ...EMPTY_DRAFT },
+    ownDraft: ownAnswer?.submitted_at ? null : ownAnswer ? parseAnswer(ownAnswer.content_json) : createEmptyDraft(),
     publishedAnswers,
     history,
+    myShares: await getMyShares(env, roomId, participant.id),
   };
   return state;
 }

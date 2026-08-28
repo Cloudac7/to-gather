@@ -1,8 +1,16 @@
 import { handle } from '@astrojs/cloudflare/handler';
 import { DurableObject } from 'cloudflare:workers';
 import { ZodError } from 'zod';
-import type { AnswerDraft, ServerEvent } from './lib/types';
-import { EMPTY_DRAFT } from './lib/types';
+import type {
+  AnswerDraft,
+  AnswerFieldKey,
+  CreateShareResponse,
+  RevealedAnswer,
+  ShareSnapshot,
+  ShareSummary,
+  ServerEvent,
+} from './lib/types';
+import { ANSWER_FIELD_KEYS, createEmptyDraft } from './lib/types';
 import {
   createParticipantCookie,
   hashSecret,
@@ -10,6 +18,7 @@ import {
   randomRoomId,
   randomString,
   randomToken,
+  sha256Hex,
   timingSafeEqual,
 } from './lib/security';
 import {
@@ -19,6 +28,7 @@ import {
   hasMinimumAnswer,
   joinRoomSchema,
   recoverRoomSchema,
+  shareCreateSchema,
 } from './lib/validation';
 import {
   buildRoomState,
@@ -26,12 +36,25 @@ import {
   getParticipantFromRequest,
   getRoom,
   nowIso,
+  parseAnswer,
+  parseRoomTemplate,
   touchRoom,
   type ParticipantRow,
 } from './server/db';
 import { assertSameOrigin, errorResponse, HttpError, json, readJson } from './server/http';
+import {
+  effectiveShareStatus,
+  getPublicShareState,
+  getShareRow,
+  SHARE_ID_PATTERN,
+  type ShareRow,
+} from './server/shares';
 
 const ROOM_PATH = /^\/api\/rooms\/([a-z2-9]{12})(?:\/(.*))?$/;
+const SHARE_PATH = /^\/api\/shares\/([a-z2-9]{24})(?:\/(.*))?$/;
+const MAX_GUESTS = 20;
+const SHARE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const PENDING_SHARE_TTL_MS = 60 * 60 * 1000;
 
 function coordinator(env: Env, roomId: string) {
   return env.ROOMS.get(env.ROOMS.idFromName(roomId));
@@ -65,9 +88,9 @@ async function createRoom(request: Request, env: Env) {
   const now = nowIso();
   await env.DB.batch([
     env.DB.prepare(
-      `INSERT INTO rooms (id, join_code_hash, status, current_round, version, created_at, last_active_at, expires_at)
-       VALUES (?, ?, 'waiting_partner', 1, 1, ?, ?, ?)`,
-    ).bind(roomId, joinHash, now, now, expiryIso(new Date(now))),
+      `INSERT INTO rooms (id, join_code_hash, status, current_round, version, created_at, last_active_at, expires_at, template_json)
+       VALUES (?, ?, 'waiting_partner', 1, 1, ?, ?, ?, ?)`,
+    ).bind(roomId, joinHash, now, now, expiryIso(new Date(now)), JSON.stringify(input.template)),
     env.DB.prepare(
       `INSERT INTO participants (id, room_id, slot, nickname, token_hash, recovery_hash, created_at)
        VALUES (?, ?, 1, ?, ?, ?, ?)`,
@@ -79,7 +102,7 @@ async function createRoom(request: Request, env: Env) {
     env.DB.prepare(
       `INSERT INTO answers (room_id, round_number, participant_id, content_json, version, updated_at)
        VALUES (?, 1, ?, ?, 0, ?)`,
-    ).bind(roomId, participantId, JSON.stringify(EMPTY_DRAFT), now),
+    ).bind(roomId, participantId, JSON.stringify(createEmptyDraft()), now),
   ]);
 
   const origin = new URL(request.url).origin;
@@ -231,6 +254,354 @@ async function readAvatar(request: Request, env: Env, roomId: string, participan
   return new Response(object.body, { headers });
 }
 
+function isAnswerFieldKey(value: string): value is AnswerFieldKey {
+  return (ANSWER_FIELD_KEYS as readonly string[]).includes(value);
+}
+
+async function uploadAnswerImage(
+  request: Request,
+  env: Env,
+  roomId: string,
+  participant: ParticipantRow,
+  field: AnswerFieldKey,
+) {
+  assertSameOrigin(request);
+  const declaredLength = Number(request.headers.get('Content-Length') ?? 0);
+  if (declaredLength > 1_000_000) {
+    throw new HttpError(413, '处理后的答案图片不能超过 1MB', 'answer_image_too_large');
+  }
+  const buffer = await request.arrayBuffer();
+  if (!buffer.byteLength || buffer.byteLength > 1_000_000) {
+    throw new HttpError(413, '处理后的答案图片不能超过 1MB', 'answer_image_too_large');
+  }
+  const type = imageType(new Uint8Array(buffer));
+  if (type !== 'image/webp') {
+    throw new HttpError(415, '答案图片需要由页面压缩为 WebP 后上传', 'invalid_answer_image');
+  }
+  const key = `${roomId}/${participant.id}/answers/${field}/${crypto.randomUUID()}.webp`;
+  await env.AVATARS.put(key, buffer, { httpMetadata: { contentType: type } });
+  const response = await coordinator(env, roomId).fetch(
+    new Request('https://room.internal/answer-image', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Participant-Id': participant.id },
+      body: JSON.stringify({ field, key }),
+    }),
+  );
+  if (!response.ok) {
+    await env.AVATARS.delete(key);
+    return response;
+  }
+  const result = (await response.json()) as { version: number; previousKey: string | null };
+  if (result.previousKey && result.previousKey !== key) await env.AVATARS.delete(result.previousKey);
+  return json({ imageKey: key, version: result.version });
+}
+
+async function deleteAnswerImage(
+  request: Request,
+  env: Env,
+  roomId: string,
+  participant: ParticipantRow,
+  field: AnswerFieldKey,
+) {
+  assertSameOrigin(request);
+  const response = await coordinator(env, roomId).fetch(
+    new Request('https://room.internal/answer-image', {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json', 'X-Participant-Id': participant.id },
+      body: JSON.stringify({ field }),
+    }),
+  );
+  if (!response.ok) return response;
+  const result = (await response.json()) as { version: number; previousKey: string | null };
+  if (result.previousKey) await env.AVATARS.delete(result.previousKey);
+  return json({ imageKey: null, version: result.version });
+}
+
+async function readRoomMedia(request: Request, env: Env, roomId: string, participant: ParticipantRow) {
+  const key = new URL(request.url).searchParams.get('key');
+  if (!key || !key.startsWith(`${roomId}/`)) throw new HttpError(404, '图片不存在', 'not_found');
+  const rows = await env.DB.prepare(
+    `SELECT a.participant_id, a.content_json, a.submitted_at, p.slot AS target_slot
+     FROM answers a JOIN participants p ON p.id = a.participant_id
+     WHERE a.room_id = ?`,
+  )
+    .bind(roomId)
+    .all<{ participant_id: string; content_json: string; submitted_at: string | null; target_slot: 1 | 2 }>();
+  const row = rows.results.find((candidate) => {
+    const answer = parseAnswer(candidate.content_json);
+    return answer.avatarKey === key || Object.values(answer.imageKeys).includes(key);
+  });
+  const canReadPublishedCounterpart = Boolean(
+    row?.submitted_at && (participant.slot === 1 || row.target_slot === 1),
+  );
+  if (!row || (row.participant_id !== participant.id && !canReadPublishedCounterpart)) {
+    throw new HttpError(403, '当前无权查看该图片', 'forbidden');
+  }
+  const object = await env.AVATARS.get(key);
+  if (!object) throw new HttpError(404, '图片不存在', 'not_found');
+  const headers = new Headers();
+  object.writeHttpMetadata(headers);
+  headers.set('Cache-Control', 'private, max-age=300');
+  headers.set('ETag', object.httpEtag);
+  return new Response(object.body, { headers });
+}
+
+function collectSnapshotMedia(snapshot: ShareSnapshot) {
+  const keys = new Set<string>();
+  for (const person of [snapshot.host, snapshot.guest]) {
+    if (person.answer.avatarKey) keys.add(person.answer.avatarKey);
+    for (const key of Object.values(person.answer.imageKeys)) if (key) keys.add(key);
+  }
+  return [...keys];
+}
+
+function shareSummary(request: Request, row: ShareRow, pairNickname: string): ShareSummary {
+  const origin = new URL(request.url).origin;
+  const status = effectiveShareStatus(row);
+  return {
+    id: row.id,
+    pairParticipantId: row.pair_participant_id,
+    pairNickname,
+    status,
+    createdAt: row.created_at,
+    expiresAt: row.expires_at,
+    shareUrl: `${origin}/share/${row.id}`,
+    posterUrl: status === 'active' && row.poster_key ? `${origin}/api/shares/${row.id}/poster` : null,
+  };
+}
+
+async function createShare(
+  request: Request,
+  env: Env,
+  roomId: string,
+  participant: ParticipantRow,
+): Promise<Response> {
+  assertSameOrigin(request);
+  const input = shareCreateSchema.parse(await readJson(request));
+  const room = await getRoom(env.DB, roomId);
+  if (!room || room.expires_at <= nowIso()) throw new HttpError(410, '房间已过期', 'expired');
+  const pair = await env.DB.prepare('SELECT * FROM participants WHERE room_id = ? AND id = ?')
+    .bind(roomId, input.pairParticipantId)
+    .first<ParticipantRow>();
+  if (!pair || pair.id === participant.id || pair.slot === participant.slot) {
+    throw new HttpError(400, '请选择当前房间中与你配对的参与者', 'invalid_pair');
+  }
+  const answerRows = await env.DB.prepare(
+    `SELECT a.participant_id, a.content_json, a.submitted_at, p.slot, p.nickname
+     FROM answers a JOIN participants p ON p.id = a.participant_id
+     WHERE a.room_id = ? AND a.round_number = ? AND a.participant_id IN (?, ?)`,
+  )
+    .bind(roomId, room.current_round, participant.id, pair.id)
+    .all<{
+      participant_id: string;
+      content_json: string;
+      submitted_at: string | null;
+      slot: 1 | 2;
+      nickname: string;
+    }>();
+  if (answerRows.results.length !== 2 || answerRows.results.some((answer) => !answer.submitted_at)) {
+    throw new HttpError(409, '双方都发布结果后才能生成分享', 'pair_not_published');
+  }
+  const answers: RevealedAnswer[] = answerRows.results.map((answer) => ({
+    participantId: answer.participant_id,
+    slot: answer.slot,
+    nickname: answer.nickname,
+    answer: parseAnswer(answer.content_json),
+  }));
+  const host = answers.find((answer) => answer.slot === 1);
+  const guest = answers.find((answer) => answer.slot === 2);
+  if (!host || !guest) throw new HttpError(409, '配对结果不完整', 'pair_not_published');
+  const now = nowIso();
+  const snapshot: ShareSnapshot = {
+    roomId,
+    roundNumber: room.current_round,
+    template: parseRoomTemplate(room.template_json),
+    host,
+    guest,
+    createdAt: now,
+  };
+  const fingerprint = await sha256Hex(JSON.stringify({ ...snapshot, createdAt: '' }));
+  if (!input.forceNew) {
+    const existing = await env.DB.prepare(
+      `SELECT * FROM shares
+       WHERE room_id = ? AND owner_participant_id = ? AND pair_participant_id = ?
+         AND round_number = ? AND fingerprint = ? AND status = 'active' AND expires_at > ?
+       ORDER BY created_at DESC LIMIT 1`,
+    )
+      .bind(roomId, participant.id, pair.id, room.current_round, fingerprint, now)
+      .first<ShareRow>();
+    if (existing?.poster_key) {
+      const response: CreateShareResponse = {
+        share: shareSummary(request, existing, pair.nickname),
+        reused: true,
+        needsPoster: false,
+      };
+      await touchRoom(env.DB, roomId);
+      return json(response);
+    }
+  }
+
+  const shareId = randomString(24, 'abcdefghjkmnpqrstuvwxyz23456789');
+  const expiresAt = new Date(new Date(now).getTime() + SHARE_TTL_MS).toISOString();
+  const mediaKeys = collectSnapshotMedia(snapshot);
+  await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO shares
+       (id, room_id, owner_participant_id, pair_participant_id, round_number, status,
+        fingerprint, snapshot_json, created_at, expires_at)
+       VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)`,
+    ).bind(
+      shareId,
+      roomId,
+      participant.id,
+      pair.id,
+      room.current_round,
+      fingerprint,
+      JSON.stringify(snapshot),
+      now,
+      expiresAt,
+    ),
+    ...mediaKeys.map((objectKey) =>
+      env.DB.prepare('INSERT INTO share_assets (share_id, asset_id, object_key) VALUES (?, ?, ?)').bind(
+        shareId,
+        randomString(16, 'abcdefghjkmnpqrstuvwxyz23456789'),
+        objectKey,
+      ),
+    ),
+  ]);
+  await touchRoom(env.DB, roomId);
+  const row = await getShareRow(env.DB, shareId);
+  if (!row) throw new HttpError(500, '分享创建失败');
+  const response: CreateShareResponse = {
+    share: shareSummary(request, row, pair.nickname),
+    reused: false,
+    needsPoster: true,
+  };
+  return json(response, { status: 201 });
+}
+
+async function uploadSharePoster(
+  request: Request,
+  env: Env,
+  roomId: string,
+  participant: ParticipantRow,
+  shareId: string,
+) {
+  assertSameOrigin(request);
+  const row = await getShareRow(env.DB, shareId);
+  if (!row || row.room_id !== roomId || row.owner_participant_id !== participant.id) {
+    throw new HttpError(404, '分享不存在', 'not_found');
+  }
+  if (row.status !== 'pending') throw new HttpError(409, '分享已经生成', 'share_already_generated');
+  const declaredLength = Number(request.headers.get('Content-Length') ?? 0);
+  if (declaredLength > 15_000_000) throw new HttpError(413, '导出图片不能超过 15MB', 'poster_too_large');
+  const buffer = await request.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  if (!buffer.byteLength || buffer.byteLength > 15_000_000) {
+    throw new HttpError(413, '导出图片不能超过 15MB', 'poster_too_large');
+  }
+  if (!(bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47)) {
+    throw new HttpError(415, '导出图片必须是 PNG', 'invalid_poster');
+  }
+  const view = new DataView(buffer);
+  if (view.getUint32(16) !== 1600 || view.getUint32(20) !== 1600) {
+    throw new HttpError(400, '导出图片必须是 1600 × 1600', 'invalid_poster_dimensions');
+  }
+  const posterKey = `shares/${shareId}/poster.png`;
+  await env.AVATARS.put(posterKey, buffer, { httpMetadata: { contentType: 'image/png' } });
+  await env.DB.prepare("UPDATE shares SET status = 'active', poster_key = ? WHERE id = ? AND status = 'pending'")
+    .bind(posterKey, shareId)
+    .run();
+  const active = await getShareRow(env.DB, shareId);
+  if (!active) throw new HttpError(500, '分享图片保存失败');
+  const pair = await env.DB.prepare('SELECT nickname FROM participants WHERE id = ?')
+    .bind(row.pair_participant_id)
+    .first<{ nickname: string }>();
+  return json({ share: shareSummary(request, active, pair?.nickname ?? '配对对象') });
+}
+
+async function releaseShareAssets(env: Env, row: ShareRow) {
+  const assets = await env.DB.prepare('SELECT object_key FROM share_assets WHERE share_id = ?')
+    .bind(row.id)
+    .all<{ object_key: string }>();
+  if (row.poster_key) await env.AVATARS.delete(row.poster_key);
+  await env.DB.prepare('DELETE FROM share_assets WHERE share_id = ?').bind(row.id).run();
+  const roomStillExists = Boolean(await getRoom(env.DB, row.room_id));
+  if (!roomStillExists) {
+    for (const { object_key: objectKey } of assets.results) {
+      const reference = await env.DB.prepare('SELECT 1 AS found FROM share_assets WHERE object_key = ? LIMIT 1')
+        .bind(objectKey)
+        .first<{ found: number }>();
+      if (!reference) await env.AVATARS.delete(objectKey);
+    }
+  }
+}
+
+async function retireShare(env: Env, row: ShareRow, status: 'revoked' | 'expired') {
+  await releaseShareAssets(env, row);
+  const now = nowIso();
+  await env.DB.prepare(
+    `UPDATE shares SET status = ?, snapshot_json = NULL, poster_key = NULL,
+      revoked_at = CASE WHEN ? = 'revoked' THEN ? ELSE revoked_at END, cleaned_at = ?
+     WHERE id = ?`,
+  )
+    .bind(status, status, now, now, row.id)
+    .run();
+}
+
+async function revokeShare(
+  request: Request,
+  env: Env,
+  roomId: string,
+  participant: ParticipantRow,
+  shareId: string,
+) {
+  assertSameOrigin(request);
+  const row = await getShareRow(env.DB, shareId);
+  if (!row || row.room_id !== roomId || row.owner_participant_id !== participant.id) {
+    throw new HttpError(404, '分享不存在', 'not_found');
+  }
+  const status = effectiveShareStatus(row);
+  if (status === 'active' || status === 'pending') await retireShare(env, row, 'revoked');
+  return json({ status: status === 'expired' ? 'expired' : 'revoked' });
+}
+
+async function publicShareApi(request: Request, env: Env, shareId: string, tail = '') {
+  if (!SHARE_ID_PATTERN.test(shareId)) throw new HttpError(404, '分享不存在', 'not_found');
+  const row = await getShareRow(env.DB, shareId);
+  if (!row) throw new HttpError(404, '分享不存在', 'not_found');
+  const status = effectiveShareStatus(row);
+  if (status !== 'active') {
+    return json({ status }, { status: status === 'expired' || status === 'revoked' ? 410 : 404 });
+  }
+  if (!tail) return json(await getPublicShareState(env, shareId));
+  if (tail === 'poster' && request.method === 'GET') {
+    if (!row.poster_key) throw new HttpError(404, '分享图片不存在', 'not_found');
+    const object = await env.AVATARS.get(row.poster_key);
+    if (!object) throw new HttpError(404, '分享图片不存在', 'not_found');
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set('Cache-Control', 'no-store');
+    headers.set('ETag', object.httpEtag);
+    return new Response(object.body, { headers });
+  }
+  const mediaMatch = tail.match(/^media\/([a-z2-9]{16})$/);
+  if (mediaMatch && request.method === 'GET') {
+    const asset = await env.DB.prepare('SELECT object_key FROM share_assets WHERE share_id = ? AND asset_id = ?')
+      .bind(shareId, mediaMatch[1])
+      .first<{ object_key: string }>();
+    if (!asset) throw new HttpError(404, '分享图片不存在', 'not_found');
+    const object = await env.AVATARS.get(asset.object_key);
+    if (!object) throw new HttpError(404, '分享图片不存在', 'not_found');
+    const headers = new Headers();
+    object.writeHttpMetadata(headers);
+    headers.set('Cache-Control', 'no-store');
+    headers.set('ETag', object.httpEtag);
+    return new Response(object.body, { headers });
+  }
+  throw new HttpError(404, '接口不存在', 'not_found');
+}
+
 async function roomApi(request: Request, env: Env, roomId: string, tail = ''): Promise<Response> {
   const participant = await getParticipantFromRequest(request, env, roomId);
   if (request.method === 'GET' && !tail) {
@@ -255,6 +626,34 @@ async function roomApi(request: Request, env: Env, roomId: string, tail = ''): P
     if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
     return readAvatar(request, env, roomId, participant);
   }
+  if (tail === 'media' && request.method === 'GET') {
+    if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
+    return readRoomMedia(request, env, roomId, participant);
+  }
+  const answerImageMatch = tail.match(/^answer-image\/([A-Za-z]+)$/);
+  if (answerImageMatch && isAnswerFieldKey(answerImageMatch[1])) {
+    if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
+    if (request.method === 'POST') {
+      return uploadAnswerImage(request, env, roomId, participant, answerImageMatch[1]);
+    }
+    if (request.method === 'DELETE') {
+      return deleteAnswerImage(request, env, roomId, participant, answerImageMatch[1]);
+    }
+  }
+  if (tail === 'shares' && request.method === 'POST') {
+    if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
+    return createShare(request, env, roomId, participant);
+  }
+  const sharePosterMatch = tail.match(/^shares\/([a-z2-9]{24})\/poster$/);
+  if (sharePosterMatch && request.method === 'POST') {
+    if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
+    return uploadSharePoster(request, env, roomId, participant, sharePosterMatch[1]);
+  }
+  const ownedShareMatch = tail.match(/^shares\/([a-z2-9]{24})$/);
+  if (ownedShareMatch && request.method === 'DELETE') {
+    if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
+    return revokeShare(request, env, roomId, participant, ownedShareMatch[1]);
+  }
   if (tail === 'draft' && request.method === 'PATCH') {
     return proxyMutation(request, env, roomId, 'draft', participant);
   }
@@ -270,6 +669,10 @@ async function roomApi(request: Request, env: Env, roomId: string, tail = ''): P
 async function apiFetch(request: Request, env: Env) {
   const url = new URL(request.url);
   if (request.method === 'POST' && url.pathname === '/api/rooms') return createRoom(request, env);
+  const shareMatch = url.pathname.match(SHARE_PATH);
+  if (shareMatch && request.method === 'GET') {
+    return publicShareApi(request, env, shareMatch[1], shareMatch[2] ?? '');
+  }
   const match = url.pathname.match(ROOM_PATH);
   if (!match) throw new HttpError(404, '接口不存在', 'not_found');
   return roomApi(request, env, match[1], match[2] ?? '');
@@ -280,10 +683,19 @@ async function cleanupExpired(env: Env) {
     .bind(nowIso())
     .all<{ id: string }>();
   for (const { id } of expiredResult.results) {
+    const referenced = await env.DB.prepare(
+      `SELECT sa.object_key
+       FROM share_assets sa JOIN shares s ON s.id = sa.share_id
+       WHERE s.room_id = ? AND s.status IN ('pending', 'active') AND s.expires_at > ?`,
+    )
+      .bind(id, nowIso())
+      .all<{ object_key: string }>();
+    const keptKeys = new Set(referenced.results.map((asset) => asset.object_key));
     let cursor: string | undefined;
     do {
       const listed = await env.AVATARS.list({ prefix: `${id}/`, cursor });
-      if (listed.objects.length) await env.AVATARS.delete(listed.objects.map((object) => object.key));
+      const deletable = listed.objects.map((object) => object.key).filter((key) => !keptKeys.has(key));
+      if (deletable.length) await env.AVATARS.delete(deletable);
       cursor = listed.truncated ? listed.cursor : undefined;
     } while (cursor);
     await env.DB.batch([
@@ -294,6 +706,20 @@ async function cleanupExpired(env: Env) {
       env.DB.prepare('DELETE FROM rooms WHERE id = ?').bind(id),
     ]);
   }
+}
+
+async function cleanupExpiredShares(env: Env) {
+  const now = nowIso();
+  const abandonedBefore = new Date(Date.now() - PENDING_SHARE_TTL_MS).toISOString();
+  const result = await env.DB.prepare(
+    `SELECT * FROM shares
+     WHERE (status = 'active' AND expires_at <= ?)
+        OR (status = 'pending' AND created_at <= ?)
+     LIMIT 100`,
+  )
+    .bind(now, abandonedBefore)
+    .all<ShareRow>();
+  for (const row of result.results) await retireShare(env, row, 'expired');
 }
 
 export class RoomCoordinator extends DurableObject<Env> {
@@ -325,6 +751,7 @@ export class RoomCoordinator extends DurableObject<Env> {
       if (!participantId) throw new HttpError(401, '缺少参与者身份', 'unauthorized');
       if (path === '/draft') return this.saveDraft(request, participantId);
       if (path === '/avatar') return this.setAvatar(request, participantId);
+      if (path === '/answer-image') return this.setAnswerImage(request, participantId);
       if (path === '/submit') return this.submit(request, participantId);
       if (path === '/reopen') return this.voteToReopen(request, participantId);
       throw new HttpError(404, '操作不存在', 'not_found');
@@ -415,6 +842,15 @@ export class RoomCoordinator extends DurableObject<Env> {
     }
     await this.ctx.storage.delete(rateKey);
 
+    const guestCount = await this.env.DB.prepare(
+      'SELECT COUNT(*) AS count FROM participants WHERE room_id = ? AND slot = 2',
+    )
+      .bind(roomId)
+      .first<{ count: number }>();
+    if ((guestCount?.count ?? 0) >= MAX_GUESTS) {
+      throw new HttpError(409, '这个房间的二号人数已满', 'room_full');
+    }
+
     const participantId = crypto.randomUUID();
     const token = randomToken();
     const recoveryCode = randomString(12);
@@ -431,7 +867,7 @@ export class RoomCoordinator extends DurableObject<Env> {
       this.env.DB.prepare(
         `INSERT INTO answers (room_id, round_number, participant_id, content_json, version, updated_at)
          VALUES (?, ?, ?, ?, 0, ?)`,
-      ).bind(roomId, room.current_round, participantId, JSON.stringify(EMPTY_DRAFT), now),
+      ).bind(roomId, room.current_round, participantId, JSON.stringify(createEmptyDraft()), now),
       this.env.DB.prepare(
         `UPDATE rooms SET status = ?, version = version + 1, last_active_at = ?, expires_at = ? WHERE id = ?`,
       ).bind('filling', now, expiryIso(new Date(now)), roomId),
@@ -508,6 +944,47 @@ export class RoomCoordinator extends DurableObject<Env> {
     return json({ avatarKey: key, version: row.version + 1 });
   }
 
+  private async setAnswerImage(request: Request, participantId: string) {
+    const payload = (await readJson(request)) as { field?: unknown; key?: unknown };
+    const field = typeof payload.field === 'string' ? payload.field : '';
+    if (!isAnswerFieldKey(field)) throw new HttpError(400, '答案字段无效', 'invalid_field');
+    const { room } = await this.roomAndParticipant(participantId);
+    if (!['filling', 'partially_submitted', 'waiting_partner'].includes(room.status)) {
+      throw new HttpError(409, '当前轮次不能更换图片', 'round_locked');
+    }
+    const row = await this.env.DB.prepare(
+      'SELECT content_json, version, submitted_at FROM answers WHERE room_id = ? AND round_number = ? AND participant_id = ?',
+    )
+      .bind(room.id, room.current_round, participantId)
+      .first<{ content_json: string; version: number; submitted_at: string | null }>();
+    if (!row || row.submitted_at) throw new HttpError(409, '答案已经提交', 'already_submitted');
+    const previous = parseAnswer(row.content_json);
+    const nextKey = request.method === 'DELETE' ? null : typeof payload.key === 'string' ? payload.key : '';
+    if (nextKey && !nextKey.startsWith(`${room.id}/${participantId}/answers/${field}/`)) {
+      throw new HttpError(400, '答案图片键无效', 'invalid_media_key');
+    }
+    if (request.method !== 'DELETE' && !nextKey) {
+      throw new HttpError(400, '答案图片键无效', 'invalid_media_key');
+    }
+    const previousKey = previous.imageKeys[field];
+    const next: AnswerDraft = {
+      ...previous,
+      imageKeys: { ...previous.imageKeys, [field]: nextKey || null },
+    };
+    const now = nowIso();
+    await this.env.DB.batch([
+      this.env.DB.prepare(
+        'UPDATE answers SET content_json = ?, version = version + 1, updated_at = ? WHERE room_id = ? AND round_number = ? AND participant_id = ?',
+      ).bind(JSON.stringify(next), now, room.id, room.current_round, participantId),
+      this.env.DB.prepare('UPDATE rooms SET last_active_at = ?, expires_at = ? WHERE id = ?').bind(
+        now,
+        expiryIso(new Date(now)),
+        room.id,
+      ),
+    ]);
+    return json({ imageKey: nextKey || null, previousKey, version: row.version + 1 });
+  }
+
   private async submit(_request: Request, participantId: string) {
     const { room } = await this.roomAndParticipant(participantId);
     if (!['waiting_partner', 'filling', 'partially_submitted'].includes(room.status)) {
@@ -522,7 +999,7 @@ export class RoomCoordinator extends DurableObject<Env> {
     if (row.submitted_at) return json({ status: room.status });
     const answer = answerSchema.parse(JSON.parse(row.content_json));
     if (!hasMinimumAnswer(answer)) {
-      throw new HttpError(400, '请上传头像并至少填写一个答案', 'incomplete_answer');
+      throw new HttpError(400, '请上传头像，并至少填写一段文字或上传一张答案图片', 'incomplete_answer');
     }
     const now = nowIso();
     await this.env.DB.prepare(
@@ -572,7 +1049,7 @@ export class RoomCoordinator extends DurableObject<Env> {
           this.env.DB.prepare(
             `INSERT INTO answers (room_id, round_number, participant_id, content_json, version, updated_at)
              VALUES (?, ?, ?, ?, 0, ?)`,
-          ).bind(room.id, nextRound, person.id, JSON.stringify(EMPTY_DRAFT), now),
+          ).bind(room.id, nextRound, person.id, JSON.stringify(createEmptyDraft()), now),
         ),
         this.env.DB.prepare(
           `UPDATE rooms SET status = 'filling', current_round = ?, version = version + 1,
@@ -607,6 +1084,6 @@ export default {
     }
   },
   async scheduled(_controller, env, ctx) {
-    ctx.waitUntil(cleanupExpired(env));
+    ctx.waitUntil(cleanupExpiredShares(env).then(() => cleanupExpired(env)));
   },
 } satisfies ExportedHandler<Env>;

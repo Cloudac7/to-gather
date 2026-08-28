@@ -51,6 +51,22 @@ function drawCover(
   ctx.drawImage(image, x - (drawnWidth - width) / 2, y - (drawnHeight - height) / 2, drawnWidth, drawnHeight);
 }
 
+function drawContain(
+  ctx: CanvasRenderingContext2D,
+  image: CanvasImageSource,
+  sourceWidth: number,
+  sourceHeight: number,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) {
+  const scale = Math.min(width / sourceWidth, height / sourceHeight);
+  const drawnWidth = sourceWidth * scale;
+  const drawnHeight = sourceHeight * scale;
+  ctx.drawImage(image, x + (width - drawnWidth) / 2, y + (height - drawnHeight) / 2, drawnWidth, drawnHeight);
+}
+
 async function loadBitmap(url: string) {
   if (url.startsWith('data:')) {
     const image = new Image();
@@ -109,6 +125,65 @@ interface LoadedImage {
   height: number;
 }
 
+export interface AnswerCellLayout {
+  padding: number;
+  textTop: number;
+  textFontSize: number;
+  textLineHeight: number;
+  maxTextLines: number;
+  imageFit: 'cover' | 'contain';
+  imageBox: { left: number; top: number; width: number; height: number } | null;
+}
+
+export function calculateAnswerCellLayout(
+  width: number,
+  height: number,
+  hasImage: boolean,
+  hasText: boolean,
+  compact = false,
+): AnswerCellLayout {
+  const padding = compact ? 12 : 16;
+  if (hasImage) {
+    const imageTop = compact ? 38 : 44;
+    const textFontSize = compact ? 17 : 20;
+    const textLineHeight = compact ? 23 : 27;
+    const maxTextLines = hasText ? (height >= 220 ? 2 : 1) : 0;
+    const bottomPadding = compact ? 10 : 14;
+    const imageTextGap = hasText ? (compact ? 8 : 10) : 0;
+    const textHeight = maxTextLines * textLineHeight;
+    const availableImageHeight = height - imageTop - bottomPadding - imageTextGap - textHeight;
+    const maxImageHeight = height >= 220 ? (compact ? 112 : 132) : Math.max(42, height - imageTop - bottomPadding);
+    const imageHeight = Math.max(34, Math.min(maxImageHeight, availableImageHeight));
+    const imageWidth = Math.min(width - padding * 2, compact ? 140 : width >= 400 ? 220 : 168);
+    return {
+      padding,
+      textTop: imageTop + imageHeight + imageTextGap,
+      textFontSize,
+      textLineHeight,
+      maxTextLines,
+      imageFit: 'contain',
+      imageBox: {
+        left: (width - imageWidth) / 2,
+        top: imageTop,
+        width: imageWidth,
+        height: imageHeight,
+      },
+    };
+  }
+  const textTop = compact ? 50 : 58;
+  const textLineHeight = compact ? 27 : height >= 220 ? 31 : 30;
+  const bottomPadding = compact ? 12 : 16;
+  return {
+    padding,
+    textTop,
+    textFontSize: compact ? 19 : height >= 220 ? 24 : 22,
+    textLineHeight,
+    maxTextLines: Math.max(1, Math.floor((height - textTop - bottomPadding) / textLineHeight)),
+    imageFit: 'contain',
+    imageBox: null,
+  };
+}
+
 function drawAnswerCell(
   ctx: CanvasRenderingContext2D,
   person: PosterPerson,
@@ -140,28 +215,35 @@ function drawAnswerCell(
   const imageUrl = person.imageUrls[key];
   const loaded = imageUrl ? images.get(imageUrl) : undefined;
   const answer = person.answer[key] || '';
+  const layout = calculateAnswerCellLayout(width, height, Boolean(loaded), Boolean(answer), compact);
   if (loaded) {
-    const imageTop = y + (compact ? 38 : 44);
-    const textBand = answer ? (compact ? 38 : 44) : 12;
-    const imageHeight = Math.max(34, height - (imageTop - y) - textBand - 8);
-    drawCover(ctx, loaded.bitmap, loaded.width, loaded.height, x + 8, imageTop, width - 16, imageHeight);
+    const imageBox = layout.imageBox!;
+    const drawImage = layout.imageFit === 'contain' ? drawContain : drawCover;
+    drawImage(ctx, loaded.bitmap, loaded.width, loaded.height, x + imageBox.left, y + imageBox.top, imageBox.width, imageBox.height);
     if (answer) {
       ctx.fillStyle = INK;
-      ctx.font = `800 ${compact ? 17 : 21}px 'Songti SC', 'STSong', serif`;
-      ctx.fillText(chars(answer, compact ? 12 : key === 'message' ? 24 : 18), x + padding, y + height - textBand + 7);
+      ctx.font = `800 ${layout.textFontSize}px 'Songti SC', 'STSong', serif`;
+      drawTextLines(
+        ctx,
+        answer,
+        x + padding,
+        y + layout.textTop,
+        width - padding * 2,
+        layout.maxTextLines,
+        layout.textLineHeight,
+      );
     }
   } else {
     ctx.fillStyle = INK;
-    ctx.font = `800 ${compact ? 19 : 25}px 'Songti SC', 'STSong', serif`;
-    const availableTop = y + (compact ? 50 : 58);
+    ctx.font = `800 ${layout.textFontSize}px 'Songti SC', 'STSong', serif`;
     drawTextLines(
       ctx,
       answer || '—',
       x + padding,
-      availableTop,
+      y + layout.textTop,
       width - padding * 2,
-      compact ? 2 : 2,
-      compact ? 27 : 34,
+      layout.maxTextLines,
+      layout.textLineHeight,
     );
   }
   ctx.restore();

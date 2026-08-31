@@ -164,7 +164,7 @@ function GoneScreen({ expired }: { expired: boolean }) {
   );
 }
 
-function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: boolean; onJoined: (code: string) => void }) {
+export function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: boolean; onJoined: (code: string) => void }) {
   const [mode, setMode] = useState<'join' | 'recover'>(full ? 'recover' : 'join');
   const [nickname, setNickname] = useState('');
   const [joinCode, setJoinCode] = useState('');
@@ -225,7 +225,7 @@ function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: boolean;
           {mode === 'join' ? (
             <>
               <label for="join-code">六位加入码</label>
-              <input id="join-code" class="code-input" inputMode="numeric" pattern="[0-9]*" value={joinCode} onInput={(e) => setJoinCode(e.currentTarget.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" />
+              <input key="join-code" id="join-code" class="code-input" inputMode="numeric" pattern="[0-9]*" value={joinCode} onInput={(e) => setJoinCode(e.currentTarget.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" />
             </>
           ) : (
             <>
@@ -235,7 +235,7 @@ function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: boolean;
                 <button type="button" class={slot === 2 ? 'active' : ''} onClick={() => setSlot(2)}>2 号</button>
               </div>
               <label for="recovery-code">十二位恢复码</label>
-              <input id="recovery-code" class="code-input recovery-input" value={recoveryCode} onInput={(e) => setRecoveryCode(e.currentTarget.value.toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 12))} placeholder="ABCD2EFG3HJK" />
+              <input key="recovery-code" id="recovery-code" class="code-input recovery-input" value={recoveryCode} onInput={(e) => setRecoveryCode(e.currentTarget.value.toUpperCase().replace(/[^A-Z2-9]/g, '').slice(0, 12))} placeholder="ABCD2EFG3HJK" />
             </>
           )}
           {error && <p class="form-error" role="alert">{error}</p>}

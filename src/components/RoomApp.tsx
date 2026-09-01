@@ -259,6 +259,7 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, onDismissSecr
   const me = state.participants.find((person) => person.isMe)!;
   const host = state.participants.find((person) => person.slot === 1);
   const guests = state.participants.filter((person) => person.slot === 2);
+  const inviteUrl = shareInfo?.inviteUrl ?? new URL(`/room/${state.roomId}`, location.origin).href;
   const onlineGuests = guests.filter((person) => online.has(person.id)).length;
   const statusText = me.slot === 1
     ? guests.length
@@ -288,7 +289,11 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, onDismissSecr
 
       {me.slot === 1 && guests.length === 0 && <WaitingPanel roomId={state.roomId} shareInfo={shareInfo} />}
 
-      <FillView state={state} onRefresh={onRefresh} />
+      <FillView
+        state={state}
+        onRefresh={onRefresh}
+        inviteUrl={inviteUrl}
+      />
 
       {state.publishedAnswers.length > 0 && <PublishedView state={state} onRefresh={onRefresh} />}
 
@@ -350,7 +355,21 @@ function QrCard({ value, roomId }: { value: string; roomId: string }) {
   );
 }
 
-function FillView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefresh: () => Promise<void> }) {
+export function RoomTemplateHeading({ template }: { template: RoomTemplate }) {
+  return (
+    <header class="fill-template-heading">
+      <span class="eyebrow">ROOM CARD / FIXED TITLE</span>
+      <h1>{template.title}</h1>
+      {template.subtitle && <p>{template.subtitle}</p>}
+    </header>
+  );
+}
+
+function FillView({ state, onRefresh, inviteUrl }: {
+  state: AuthenticatedRoomState;
+  onRefresh: () => Promise<void>;
+  inviteUrl: string;
+}) {
   const me = state.participants.find((person) => person.isMe)!;
   const [draft, setDraft] = useState<AnswerDraft>(state.ownDraft ?? createEmptyDraft());
   const [version, setVersion] = useState(state.version);
@@ -500,19 +519,19 @@ function FillView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefre
 
   if (submitted) {
     return (
-      <section class="submitted-panel paper-panel">
-        <div class="stamp">DONE</div>
-        <span class="eyebrow">YOUR RESULT IS PUBLISHED</span>
-        <h1>你的这一面，<br />已经发布。</h1>
-        <p>{me.slot === 1 ? '所有加入本房间的二号都能看到你；你也能在下方看到每位已发布的二号。' : '一号现在可以看到你的结果；其他二号无法看到。'}</p>
-      </section>
+      <PublishedConfirmation
+        slot={me.slot}
+        title={state.template.title}
+        inviteUrl={inviteUrl}
+      />
     );
   }
 
   return (
     <section class="fill-section" id="your-card">
+      <RoomTemplateHeading template={state.template} />
       <div class="section-heading">
-        <div><span class="eyebrow">ROUND {state.roundNumber} / YOUR SIDE</span><h1>先说说你自己。</h1></div>
+        <div><span class="eyebrow">ROUND {state.roundNumber} / YOUR SIDE</span><h2>先说说你自己。</h2></div>
         <div class="save-status">{saving ? '正在保存…' : dirty ? '等待保存' : '✓ 已自动保存'}</div>
       </div>
       <div class="answer-sheet">
@@ -555,6 +574,42 @@ function FillView({ state, onRefresh }: { state: AuthenticatedRoomState; onRefre
         <p>发布前只有你能看到草稿；发布后不能修改。</p>
         <button class="button button-accent button-large" onClick={submit} disabled={saving || uploading || Boolean(uploadingField)}>发布我的结果 →</button>
       </div>
+    </section>
+  );
+}
+
+export function PublishedConfirmation({ slot, title, inviteUrl }: {
+  slot: 1 | 2;
+  title: string;
+  inviteUrl: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState('');
+
+  async function copyInvite() {
+    try {
+      await navigator.clipboard.writeText(shareClipboardText(title, inviteUrl));
+      setCopyError('');
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setCopyError('复制失败，请检查浏览器的剪贴板权限后重试。');
+    }
+  }
+
+  return (
+    <section class="submitted-panel paper-panel">
+      <div class="stamp">DONE</div>
+      <span class="eyebrow">YOUR RESULT IS PUBLISHED</span>
+      <h1>你的这一面，<br />已经发布。</h1>
+      <p>{slot === 1 ? '所有加入本房间的二号都能看到你；你也能在下方看到每位已发布的二号。' : '一号现在可以看到你的结果；其他二号无法看到。'}</p>
+      <div class="submitted-share-action">
+        <button class="button button-accent" type="button" onClick={() => void copyInvite()}>
+          {copied ? '邀请链接已复制 ✓' : '复制填写邀请链接 ↗'}
+        </button>
+        <small>邀请链接会带上房间主标题；收到链接的人可以加入房间填写自己的这一面。</small>
+      </div>
+      {copyError && <p class="submitted-share-hint" role="alert">{copyError}</p>}
     </section>
   );
 }
@@ -732,6 +787,10 @@ function PublishedView({ state, onRefresh }: { state: AuthenticatedRoomState; on
   );
 }
 
+export function shareClipboardText(title: string, shareUrl: string) {
+  return `${title.trim()}\n${shareUrl}`;
+}
+
 function RevealedCard({ roomId, data, template }: { roomId: string; data: RevealedAnswer; template: RoomTemplate }) {
   function answerContent(key: AnswerFieldKey) {
     const imageKey = data.answer.imageKeys[key];
@@ -845,7 +904,8 @@ function ShareModal({ state, host, guest, onClose, onRefresh }: {
 
   async function copyLink() {
     if (!result) return;
-    await navigator.clipboard.writeText(result.shareUrl);
+    const shareUrl = new URL(result.shareUrl, location.origin).href;
+    await navigator.clipboard.writeText(shareClipboardText(state.template.title, shareUrl));
     setCopied(true);
     window.setTimeout(() => setCopied(false), 1800);
   }
@@ -925,7 +985,8 @@ function ShareHistory({ state, onRefresh, onRegenerate }: {
   }
 
   async function copy(share: ShareSummary) {
-    await navigator.clipboard.writeText(new URL(share.shareUrl, location.origin).href);
+    const shareUrl = new URL(share.shareUrl, location.origin).href;
+    await navigator.clipboard.writeText(shareClipboardText(state.template.title, shareUrl));
   }
 
   const statusLabel: Record<ShareSummary['status'], string> = {

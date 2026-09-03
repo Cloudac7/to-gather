@@ -29,11 +29,20 @@ const itunesResultSchema = z.object({
 
 type ItunesResult = z.infer<typeof itunesResultSchema>;
 
+const audioDbIdSchema = z.preprocess(
+  (value) => typeof value === 'number' ? String(value) : value,
+  z.string().regex(/^\d+$/),
+);
+const audioDbUrlSchema = z.preprocess(
+  (value) => value === '' ? null : value,
+  z.url().nullable().optional(),
+);
+
 const audioDbArtistSchema = z.object({
-  idArtist: z.string().regex(/^\d+$/),
+  idArtist: audioDbIdSchema,
   strArtist: z.string(),
   strArtistAlternate: z.string().nullable().optional(),
-  strArtistThumb: z.url().nullable().optional(),
+  strArtistThumb: audioDbUrlSchema,
 }).loose();
 
 const audioDbResponseSchema = z.object({
@@ -43,11 +52,11 @@ const audioDbResponseSchema = z.object({
 type AudioDbArtist = z.infer<typeof audioDbArtistSchema>;
 
 const audioDbAlbumSchema = z.object({
-  idAlbum: z.string().regex(/^\d+$/),
-  idArtist: z.string().regex(/^\d+$/).nullable().optional(),
+  idAlbum: audioDbIdSchema,
+  idArtist: audioDbIdSchema.nullable().optional(),
   strAlbum: z.string(),
   strArtist: z.string().nullable().optional(),
-  strAlbumThumb: z.url().nullable().optional(),
+  strAlbumThumb: audioDbUrlSchema,
 }).loose();
 
 const audioDbAlbumResponseSchema = z.object({
@@ -55,13 +64,13 @@ const audioDbAlbumResponseSchema = z.object({
 }).loose();
 
 const audioDbTrackSchema = z.object({
-  idTrack: z.string().regex(/^\d+$/),
-  idAlbum: z.string().regex(/^\d+$/).nullable().optional(),
-  idArtist: z.string().regex(/^\d+$/).nullable().optional(),
+  idTrack: audioDbIdSchema,
+  idAlbum: audioDbIdSchema.nullable().optional(),
+  idArtist: audioDbIdSchema.nullable().optional(),
   strTrack: z.string(),
   strAlbum: z.string().nullable().optional(),
   strArtist: z.string().nullable().optional(),
-  strTrackThumb: z.url().nullable().optional(),
+  strTrackThumb: audioDbUrlSchema,
 }).loose();
 
 const audioDbTrackResponseSchema = z.object({

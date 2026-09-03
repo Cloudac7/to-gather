@@ -480,7 +480,7 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   ctx.font = '800 17px system-ui, sans-serif';
   ctx.fillStyle = '#706d65';
   ctx.fillText(
-    input.template.variant === 'music' ? 'TO-GATHER · MUSIC DATA BY TheAudioDB / iTunes · 30 DAYS' : 'TO-GATHER · 30 DAYS',
+    input.template.variant === 'music' ? 'TO-GATHER · MUSIC DATA BY TheAudioDB · 30 DAYS' : 'TO-GATHER · 30 DAYS',
     190,
     footerY + 176,
   );

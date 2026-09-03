@@ -5,7 +5,9 @@ import { answerSchema, hasMinimumAnswer } from '../src/lib/validation';
 import { parseAnswer, parseRoomTemplate } from '../src/server/db';
 import {
   isAllowedArtworkUrl,
+  normalizeAudioDbAlbum,
   normalizeAudioDbArtist,
+  normalizeAudioDbTrack,
   normalizeItunesResult,
   normalizeMusicSearchTerm,
 } from '../src/server/music';
@@ -97,6 +99,31 @@ describe('music result normalization and artwork safety', () => {
       artworkUrl100: 'https://is1-ssl.mzstatic.com/image/thumb/example/100x100bb.jpg',
       trackViewUrl: 'https://music.apple.com/cn/album/example/42',
     }, 'song')).toEqual(song);
+  });
+
+  it('normalizes TheAudioDB album and track results', () => {
+    expect(normalizeAudioDbAlbum({
+      idAlbum: '123',
+      idArtist: '456',
+      strAlbum: '  Parachutes ',
+      strArtist: 'Coldplay',
+      strAlbumThumb: 'https://r2.theaudiodb.com/images/media/album/thumb/parachutes.jpg',
+    })).toMatchObject({
+      provider: 'theaudiodb', id: 123, kind: 'album', title: 'Parachutes',
+      artistName: 'Coldplay', artworkUrl: 'https://r2.theaudiodb.com/images/media/album/thumb/parachutes.jpg',
+    });
+    expect(normalizeAudioDbTrack({
+      idTrack: '789',
+      idAlbum: '123',
+      idArtist: '456',
+      strTrack: ' Yellow ',
+      strAlbum: 'Parachutes',
+      strArtist: 'Coldplay',
+      strTrackThumb: null,
+    })).toMatchObject({
+      provider: 'theaudiodb', id: 789, kind: 'song', title: 'Yellow',
+      artistName: 'Coldplay', collectionName: 'Parachutes', artworkUrl: null,
+    });
   });
 
   it('only proxies HTTPS artwork from the configured music image hosts', () => {

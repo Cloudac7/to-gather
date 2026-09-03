@@ -1058,7 +1058,7 @@ function MusicSearchField({ field, entity, selection, disabled, onSelect, onClea
           })}
         </div>
       )}
-      {entity === 'artist' && <small class="music-search-note">歌手照片来自 TheAudioDB；支持大小写混输，并可按主名称或别名搜索。</small>}
+      <small class="music-search-note">音乐目录来自 TheAudioDB；支持大小写混输。部分歌曲可能没有封面，但仍可选择并保存文字信息。</small>
       {field === 'favoriteSong' && <small class="music-search-note">搜索只关联歌曲和封面，歌词请在下方手动填写。</small>}
     </div>
   );

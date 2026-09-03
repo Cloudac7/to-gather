@@ -6,7 +6,7 @@ const SEARCH_LIMIT = 8;
 const SEARCH_RESPONSE_LIMIT = 256_000;
 const ARTWORK_RESPONSE_LIMIT = 5_000_000;
 const UPSTREAM_TIMEOUT_MS = 8_000;
-const MUSIC_CACHE_NAME = 'to-gather-music-v4';
+const MUSIC_CACHE_NAME = 'to-gather-music-v5';
 
 const searchQuerySchema = z.object({
   term: z.string().trim().min(2).max(80),
@@ -27,10 +27,6 @@ const itunesResultSchema = z.object({
   trackViewUrl: z.url().optional(),
 }).loose();
 
-const itunesResponseSchema = z.object({
-  results: z.array(itunesResultSchema).max(SEARCH_LIMIT * 8),
-}).loose();
-
 type ItunesResult = z.infer<typeof itunesResultSchema>;
 
 const audioDbArtistSchema = z.object({
@@ -45,6 +41,35 @@ const audioDbResponseSchema = z.object({
 }).loose();
 
 type AudioDbArtist = z.infer<typeof audioDbArtistSchema>;
+
+const audioDbAlbumSchema = z.object({
+  idAlbum: z.string().regex(/^\d+$/),
+  idArtist: z.string().regex(/^\d+$/).nullable().optional(),
+  strAlbum: z.string(),
+  strArtist: z.string().nullable().optional(),
+  strAlbumThumb: z.url().nullable().optional(),
+}).loose();
+
+const audioDbAlbumResponseSchema = z.object({
+  album: z.array(audioDbAlbumSchema).max(10).nullable(),
+}).loose();
+
+const audioDbTrackSchema = z.object({
+  idTrack: z.string().regex(/^\d+$/),
+  idAlbum: z.string().regex(/^\d+$/).nullable().optional(),
+  idArtist: z.string().regex(/^\d+$/).nullable().optional(),
+  strTrack: z.string(),
+  strAlbum: z.string().nullable().optional(),
+  strArtist: z.string().nullable().optional(),
+  strTrackThumb: z.url().nullable().optional(),
+}).loose();
+
+const audioDbTrackResponseSchema = z.object({
+  track: z.array(audioDbTrackSchema).max(10).nullable(),
+}).loose();
+
+type AudioDbAlbum = z.infer<typeof audioDbAlbumSchema>;
+type AudioDbTrack = z.infer<typeof audioDbTrackSchema>;
 
 function largerArtwork(url: string | undefined) {
   return url?.replace(/\/\d+x\d+bb\./, '/600x600bb.') ?? null;
@@ -65,6 +90,38 @@ export function normalizeAudioDbArtist(result: AudioDbArtist): MusicSearchResult
     artistName: title,
     collectionName: null,
     artworkUrl: result.strArtistThumb,
+    storeUrl: null,
+  };
+}
+
+export function normalizeAudioDbAlbum(result: AudioDbAlbum): MusicSearchResult | null {
+  const title = result.strAlbum.trim();
+  if (!title) return null;
+  const artistName = result.strArtist?.trim() ?? '';
+  return {
+    provider: 'theaudiodb',
+    id: Number(result.idAlbum),
+    kind: 'album',
+    title,
+    artistName,
+    collectionName: title,
+    artworkUrl: result.strAlbumThumb ?? null,
+    storeUrl: null,
+  };
+}
+
+export function normalizeAudioDbTrack(result: AudioDbTrack): MusicSearchResult | null {
+  const title = result.strTrack.trim();
+  if (!title) return null;
+  const artistName = result.strArtist?.trim() ?? '';
+  return {
+    provider: 'theaudiodb',
+    id: Number(result.idTrack),
+    kind: 'song',
+    title,
+    artistName,
+    collectionName: result.strAlbum?.trim() || null,
+    artworkUrl: result.strTrackThumb ?? null,
     storeUrl: null,
   };
 }
@@ -160,19 +217,11 @@ export async function musicSearchApi(request: Request, ctx: ExecutionContext) {
   const cached = await cache.match(cacheRequest);
   if (cached) return cached;
 
-  const upstreamUrl = input.entity === 'artist'
-    ? new URL('https://www.theaudiodb.com/api/v1/json/123/search.php')
-    : new URL('https://itunes.apple.com/search');
-  upstreamUrl.search = input.entity === 'artist'
-    ? new URLSearchParams({ s: term }).toString()
-    : new URLSearchParams({
-      term,
-      media: 'music',
-      entity: input.entity === 'album' ? 'album' : 'song',
-      country: 'CN',
-      lang: 'zh_cn',
-      limit: String(SEARCH_LIMIT),
-    }).toString();
+  const endpoint = input.entity === 'artist'
+    ? 'search.php'
+    : input.entity === 'album' ? 'searchalbum.php' : 'searchtrack.php';
+  const upstreamUrl = new URL(`https://www.theaudiodb.com/api/v1/json/123/${endpoint}`);
+  upstreamUrl.search = new URLSearchParams({ s: term }).toString();
   let upstream: Response;
   try {
     upstream = await fetchWithTimeout(upstreamUrl, { headers: { Accept: 'application/json' } });
@@ -191,19 +240,20 @@ export async function musicSearchApi(request: Request, ctx: ExecutionContext) {
   if (input.entity === 'artist') {
     const validated = audioDbResponseSchema.safeParse(parsed);
     if (!validated.success) throw new HttpError(502, '音乐搜索返回了无效数据', 'invalid_music_response');
-    results = (validated.data.artists ?? [])
-      .map(normalizeAudioDbArtist)
-      .filter((result): result is MusicSearchResult => result !== null)
-      .slice(0, SEARCH_LIMIT);
-  } else {
-    const validated = itunesResponseSchema.safeParse(parsed);
+    results = (validated.data.artists ?? []).map(normalizeAudioDbArtist)
+      .filter((result): result is MusicSearchResult => result !== null).slice(0, SEARCH_LIMIT);
+  } else if (input.entity === 'album') {
+    const validated = audioDbAlbumResponseSchema.safeParse(parsed);
     if (!validated.success) throw new HttpError(502, '音乐搜索返回了无效数据', 'invalid_music_response');
-    results = validated.data.results
-      .map((result) => normalizeItunesResult(result, input.entity))
-      .filter((result): result is MusicSearchResult => result !== null)
-      .slice(0, SEARCH_LIMIT);
+    results = (validated.data.album ?? []).map(normalizeAudioDbAlbum)
+      .filter((result): result is MusicSearchResult => result !== null).slice(0, SEARCH_LIMIT);
+  } else {
+    const validated = audioDbTrackResponseSchema.safeParse(parsed);
+    if (!validated.success) throw new HttpError(502, '音乐搜索返回了无效数据', 'invalid_music_response');
+    results = (validated.data.track ?? []).map(normalizeAudioDbTrack)
+      .filter((result): result is MusicSearchResult => result !== null).slice(0, SEARCH_LIMIT);
   }
-  const cacheSeconds = input.entity === 'artist' ? 3_600 : 300;
+  const cacheSeconds = 3_600;
   const response = json({ results }, { headers: { 'Cache-Control': `public, max-age=${cacheSeconds}` } });
   return cacheResponse(cacheRequest, response, ctx);
 }

@@ -178,6 +178,8 @@ textarea { resize: vertical; }
 .submitted-panel p { color: var(--muted); font-size: 17px; }
 .submitted-share-action { margin-top: 34px; padding-top: 24px; border-top: 2px solid var(--line); display: flex; align-items: center; gap: 18px; }
 .submitted-share-action .button { width: auto; flex: none; }
+.submitted-share-buttons { display: flex; flex-wrap: wrap; gap: 10px; flex: none; }
+.submitted-share-buttons .button { width: auto; }
 .submitted-share-action small { color: var(--muted); font-size: 11px; font-weight: 700; line-height: 1.6; }
 .submitted-panel .submitted-share-hint { margin: 14px 0 0; color: #8f2a17; font-size: 13px; font-weight: 800; }
 .stamp { position: absolute; right: 36px; top: 34px; border: 4px double var(--accent); color: var(--accent); padding: 10px 14px; font-weight: 900; transform: rotate(10deg); }
@@ -322,6 +324,7 @@ textarea { resize: vertical; }
   .submit-row, .reopen-panel { align-items: stretch; flex-direction: column; }
   .submitted-share-action { align-items: stretch; flex-direction: column; }
   .submitted-share-action .button { width: 100%; }
+  .submitted-share-buttons { display: grid; grid-template-columns: 1fr; width: 100%; }
   .button-large { width: 100%; }
   .reveal-section { padding-left: 14px; padding-right: 14px; }
   .reveal-heading { text-align: left; }

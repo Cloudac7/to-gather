@@ -16,7 +16,7 @@ import type {
 } from '../lib/types';
 import { createEmptyDraft, EMPTY_ANSWER_IMAGES } from '../lib/types';
 import { CARD_FIELDS } from '../lib/card';
-import { generatePoster, type PosterInput, type PosterPerson } from '../lib/poster';
+import { buildSingleInvitePosterInput, generatePoster, type PosterInput, type PosterPerson } from '../lib/poster';
 
 interface Props {
   roomId: string;
@@ -41,6 +41,7 @@ export default function RoomApp({ roomId }: Props) {
   const [online, setOnline] = useState<Set<string>>(new Set());
   const [shareInfo, setShareInfo] = useState<CreateRoomResponse | null>(null);
   const [recoveryCode, setRecoveryCode] = useState('');
+  const [secretsDismissed, setSecretsDismissed] = useState(false);
 
   async function refresh() {
     try {
@@ -54,6 +55,7 @@ export default function RoomApp({ roomId }: Props) {
 
   useEffect(() => {
     const stored = sessionStorage.getItem(`duet_invite_${roomId}`);
+    setSecretsDismissed(sessionStorage.getItem(`duet_secrets_dismissed_${roomId}`) === '1');
     if (stored) {
       try {
         setShareInfo(JSON.parse(stored));
@@ -132,9 +134,10 @@ export default function RoomApp({ roomId }: Props) {
       online={online}
       shareInfo={shareInfo}
       recoveryCode={recoveryCode}
+      secretsDismissed={secretsDismissed}
       onDismissSecrets={() => {
-        sessionStorage.removeItem(`duet_invite_${roomId}`);
-        setShareInfo(null);
+        sessionStorage.setItem(`duet_secrets_dismissed_${roomId}`, '1');
+        setSecretsDismissed(true);
         setRecoveryCode('');
       }}
       onRefresh={refresh}
@@ -167,7 +170,9 @@ function GoneScreen({ expired }: { expired: boolean }) {
 export function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: boolean; onJoined: (code: string) => void }) {
   const [mode, setMode] = useState<'join' | 'recover'>(full ? 'recover' : 'join');
   const [nickname, setNickname] = useState('');
-  const [joinCode, setJoinCode] = useState('');
+  const [joinCode, setJoinCode] = useState(() => (
+    full || typeof location === 'undefined' ? '' : joinCodeFromHash(location.hash)
+  ));
   const [recoveryCode, setRecoveryCode] = useState('');
   const [slot, setSlot] = useState<1 | 2>(full ? 1 : 2);
   const [error, setError] = useState('');
@@ -248,11 +253,12 @@ export function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: b
   );
 }
 
-function ParticipantRoom({ state, online, shareInfo, recoveryCode, onDismissSecrets, onRefresh }: {
+function ParticipantRoom({ state, online, shareInfo, recoveryCode, secretsDismissed, onDismissSecrets, onRefresh }: {
   state: AuthenticatedRoomState;
   online: Set<string>;
   shareInfo: CreateRoomResponse | null;
   recoveryCode: string;
+  secretsDismissed: boolean;
   onDismissSecrets: () => void;
   onRefresh: () => Promise<void>;
 }) {
@@ -279,20 +285,28 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, onDismissSecr
         </div>
       </header>
 
-      {(shareInfo || recoveryCode) && (
+      {!secretsDismissed && (shareInfo || recoveryCode) && (
         <SecretPanel
           info={shareInfo}
+          title={state.template.title}
           recoveryCode={recoveryCode || shareInfo?.recoveryCode || ''}
           onDismiss={onDismissSecrets}
         />
       )}
 
-      {me.slot === 1 && guests.length === 0 && <WaitingPanel roomId={state.roomId} shareInfo={shareInfo} />}
+      {me.slot === 1 && guests.length === 0 && (
+        <WaitingPanel
+          roomId={state.roomId}
+          title={state.template.title}
+          shareInfo={secretsDismissed ? null : shareInfo}
+        />
+      )}
 
       <FillView
         state={state}
         onRefresh={onRefresh}
         inviteUrl={inviteUrl}
+        joinCode={me.slot === 1 ? shareInfo?.joinCode ?? null : null}
       />
 
       {state.publishedAnswers.length > 0 && <PublishedView state={state} onRefresh={onRefresh} />}
@@ -302,7 +316,12 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, onDismissSecr
   );
 }
 
-function SecretPanel({ info, recoveryCode, onDismiss }: { info: CreateRoomResponse | null; recoveryCode: string; onDismiss: () => void }) {
+function SecretPanel({ info, title, recoveryCode, onDismiss }: {
+  info: CreateRoomResponse | null;
+  title: string;
+  recoveryCode: string;
+  onDismiss: () => void;
+}) {
   return (
     <section class="secret-banner">
       <div>
@@ -311,14 +330,15 @@ function SecretPanel({ info, recoveryCode, onDismiss }: { info: CreateRoomRespon
         <code>{recoveryCode}</code>
         <p>换设备或清理浏览器后，需要昵称、位置和这串码才能回来。关闭后不再完整显示。</p>
       </div>
-      {info && <CopyButton value={`邀请链接：${info.inviteUrl}\n加入码：${info.joinCode}`}>复制邀请信息</CopyButton>}
+      {info && <CopyButton value={invitationClipboardText(title, info.inviteUrl, info.joinCode)}>复制房间邀请信息</CopyButton>}
       <button class="text-button" onClick={onDismiss}>我已安全保存 ×</button>
     </section>
   );
 }
 
-function WaitingPanel({ roomId, shareInfo }: { roomId: string; shareInfo: CreateRoomResponse | null }) {
+function WaitingPanel({ roomId, title, shareInfo }: { roomId: string; title: string; shareInfo: CreateRoomResponse | null }) {
   const inviteUrl = shareInfo?.inviteUrl ?? location.href;
+  const qrInviteUrl = shareInfo?.joinCode ? directJoinUrl(inviteUrl, shareInfo.joinCode) : inviteUrl;
   return (
     <section class="waiting-layout">
       <div class="waiting-copy">
@@ -331,11 +351,11 @@ function WaitingPanel({ roomId, shareInfo }: { roomId: string; shareInfo: Create
           <p class="hint-box">为了安全，加入码只在创建时展示。如果没有保存，请新建房间。</p>
         )}
         <div class="waiting-actions">
-          <CopyButton value={inviteUrl}>复制邀请链接</CopyButton>
+          <CopyButton value={invitationClipboardText(title, inviteUrl, shareInfo?.joinCode ?? null)}>复制房间邀请信息</CopyButton>
           <a class="button button-accent" href="#your-card">开始填写 ↓</a>
         </div>
       </div>
-      <QrCard value={inviteUrl} roomId={roomId} />
+      <QrCard value={qrInviteUrl} roomId={roomId} />
     </section>
   );
 }
@@ -365,10 +385,11 @@ export function RoomTemplateHeading({ template }: { template: RoomTemplate }) {
   );
 }
 
-function FillView({ state, onRefresh, inviteUrl }: {
+function FillView({ state, onRefresh, inviteUrl, joinCode }: {
   state: AuthenticatedRoomState;
   onRefresh: () => Promise<void>;
   inviteUrl: string;
+  joinCode: string | null;
 }) {
   const me = state.participants.find((person) => person.isMe)!;
   const [draft, setDraft] = useState<AnswerDraft>(state.ownDraft ?? createEmptyDraft());
@@ -521,8 +542,11 @@ function FillView({ state, onRefresh, inviteUrl }: {
     return (
       <PublishedConfirmation
         slot={me.slot}
-        title={state.template.title}
+        roomId={state.roomId}
+        template={state.template}
         inviteUrl={inviteUrl}
+        joinCode={joinCode}
+        publishedAnswer={state.publishedAnswers.find((answer) => answer.participantId === me.id) ?? null}
       />
     );
   }
@@ -578,39 +602,97 @@ function FillView({ state, onRefresh, inviteUrl }: {
   );
 }
 
-export function PublishedConfirmation({ slot, title, inviteUrl }: {
+export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinCode, publishedAnswer }: {
   slot: 1 | 2;
-  title: string;
+  roomId: string;
+  template: RoomTemplate;
   inviteUrl: string;
+  joinCode: string | null;
+  publishedAnswer: RevealedAnswer | null;
 }) {
   const [copied, setCopied] = useState(false);
-  const [copyError, setCopyError] = useState('');
+  const [forking, setForking] = useState(false);
+  const [actionError, setActionError] = useState('');
+  const [inviteCardOpen, setInviteCardOpen] = useState(false);
 
   async function copyInvite() {
     try {
-      await navigator.clipboard.writeText(shareClipboardText(title, inviteUrl));
-      setCopyError('');
+      await navigator.clipboard.writeText(invitationClipboardText(template.title, inviteUrl, joinCode));
+      setActionError('');
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
-      setCopyError('复制失败，请检查浏览器的剪贴板权限后重试。');
+      setActionError('复制失败，请检查浏览器的剪贴板权限后重试。');
     }
   }
 
+  async function forkAsHost() {
+    if (!window.confirm('将复制你当前发布的文字和图片，并创建一个由你担任一号的新房间。继续吗？')) return;
+    setForking(true);
+    setActionError('');
+    try {
+      const created = await api<CreateRoomResponse>(`/api/rooms/${roomId}/fork`, { method: 'POST' });
+      sessionStorage.setItem(`duet_invite_${created.roomId}`, JSON.stringify(created));
+      window.location.assign(`/room/${created.roomId}`);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : '新房间创建失败，请稍后重试。');
+      setForking(false);
+    }
+  }
+
+  function openInviteCard() {
+    if (!joinCode) {
+      setActionError('当前会话没有保存加入码，无法生成可直接加入的二维码。请使用创建房间时保存的邀请信息。');
+      return;
+    }
+    if (!publishedAnswer) {
+      setActionError('已发布内容尚未同步完成，请刷新页面后重试。');
+      return;
+    }
+    setActionError('');
+    setInviteCardOpen(true);
+  }
+
   return (
-    <section class="submitted-panel paper-panel">
-      <div class="stamp">DONE</div>
-      <span class="eyebrow">YOUR RESULT IS PUBLISHED</span>
-      <h1>你的这一面，<br />已经发布。</h1>
-      <p>{slot === 1 ? '所有加入本房间的二号都能看到你；你也能在下方看到每位已发布的二号。' : '一号现在可以看到你的结果；其他二号无法看到。'}</p>
-      <div class="submitted-share-action">
-        <button class="button button-accent" type="button" onClick={() => void copyInvite()}>
-          {copied ? '邀请链接已复制 ✓' : '复制填写邀请链接 ↗'}
-        </button>
-        <small>邀请链接会带上房间主标题；收到链接的人可以加入房间填写自己的这一面。</small>
-      </div>
-      {copyError && <p class="submitted-share-hint" role="alert">{copyError}</p>}
-    </section>
+    <>
+      <section class="submitted-panel paper-panel">
+        <div class="stamp">DONE</div>
+        <span class="eyebrow">YOUR RESULT IS PUBLISHED</span>
+        <h1>你的这一面，<br />已经发布。</h1>
+        <p>{slot === 1 ? '所有加入本房间的二号都能看到你；你也能在下方看到每位已发布的二号。' : '一号现在可以看到你的结果；其他二号无法看到。'}</p>
+        <div class="submitted-share-action">
+          {slot === 1 ? (
+            <>
+              <div class="submitted-share-buttons">
+                <button class="button button-accent" type="button" onClick={openInviteCard}>生成单人邀请卡 ↗</button>
+                <button class="button button-dark" type="button" onClick={() => void copyInvite()}>
+                  {copied ? '邀请信息已复制 ✓' : '复制房间邀请信息'}
+                </button>
+              </div>
+              <small>{joinCode ? '复制内容包含主标题、房间链接和六位加入码。' : '当前会话没有保存加入码；链接仍可复制，请另行发送此前保存的加入码。'}</small>
+            </>
+          ) : (
+            <>
+              <button class="button button-dark" type="button" onClick={() => void forkAsHost()} disabled={forking}>
+                {forking ? '正在复制内容并建房…' : '用我的内容创建新房间 →'}
+              </button>
+              <small>当前文字、头像、答案图片和卡片标题会成为新房间的可编辑草稿，你将担任一号。</small>
+            </>
+          )}
+        </div>
+        {actionError && <p class="submitted-share-hint" role="alert">{actionError}</p>}
+      </section>
+      {inviteCardOpen && publishedAnswer && joinCode && (
+        <SingleInviteCardModal
+          roomId={roomId}
+          template={template}
+          host={publishedAnswer}
+          inviteUrl={inviteUrl}
+          joinCode={joinCode}
+          onClose={() => setInviteCardOpen(false)}
+        />
+      )}
+    </>
   );
 }
 
@@ -789,6 +871,116 @@ function PublishedView({ state, onRefresh }: { state: AuthenticatedRoomState; on
 
 export function shareClipboardText(title: string, shareUrl: string) {
   return `${title.trim()}\n${shareUrl}`;
+}
+
+export function invitationClipboardText(title: string, inviteUrl: string, joinCode: string | null) {
+  const invitation = shareClipboardText(title, inviteUrl);
+  return joinCode ? `${invitation}\n加入码：${joinCode}` : invitation;
+}
+
+export function joinCodeFromHash(hash: string) {
+  const value = new URLSearchParams(hash.replace(/^#/, '')).get('join') ?? '';
+  return /^\d{6}$/.test(value) ? value : '';
+}
+
+export function directJoinUrl(inviteUrl: string, joinCode: string) {
+  const url = new URL(inviteUrl);
+  url.hash = new URLSearchParams({ join: joinCode }).toString();
+  return url.href;
+}
+
+function SingleInviteCardModal({ roomId, template, host, inviteUrl, joinCode, onClose }: {
+  roomId: string;
+  template: RoomTemplate;
+  host: RevealedAnswer;
+  inviteUrl: string;
+  joinCode: string;
+  onClose: () => void;
+}) {
+  const [poster, setPoster] = useState<Blob | null>(null);
+  const [previewUrl, setPreviewUrl] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState('');
+  const joinUrl = directJoinUrl(inviteUrl, joinCode);
+
+  useEffect(() => {
+    let stopped = false;
+    let objectUrl = '';
+    const posterInput = buildSingleInvitePosterInput(template, roomPosterPerson(roomId, host), joinUrl);
+    void generatePoster(posterInput)
+      .then((blob) => {
+        if (stopped) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPoster(blob);
+        setPreviewUrl(objectUrl);
+      })
+      .catch((caught) => setError(caught instanceof Error ? caught.message : '邀请卡生成失败'));
+    return () => {
+      stopped = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [roomId, host.participantId, joinUrl]);
+
+  function download() {
+    if (!poster || !previewUrl) return;
+    const link = document.createElement('a');
+    link.href = previewUrl;
+    link.download = `一起揭晓-${host.nickname}-邀请卡.png`;
+    link.click();
+  }
+
+  async function copyInvitation() {
+    try {
+      await navigator.clipboard.writeText(invitationClipboardText(template.title, inviteUrl, joinCode));
+      setError('');
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch {
+      setError('复制失败，请检查浏览器的剪贴板权限后重试。');
+    }
+  }
+
+  async function systemShare() {
+    if (!poster) return;
+    try {
+      const file = new File([poster], `一起揭晓-${host.nickname}-邀请卡.png`, { type: 'image/png' });
+      const data: ShareData = {
+        title: template.title,
+        text: `${host.nickname} 已经填好这一面，等你来填写另一面。`,
+        url: joinUrl,
+        files: [file],
+      };
+      if (navigator.canShare?.({ files: [file] })) await navigator.share(data);
+      else await navigator.share({ title: data.title, text: data.text, url: data.url });
+    } catch (caught) {
+      if (caught instanceof DOMException && caught.name === 'AbortError') return;
+      setError(caught instanceof Error ? caught.message : '系统分享失败');
+    }
+  }
+
+  return (
+    <div class="modal-backdrop share-modal-backdrop" role="presentation">
+      <section class="share-modal paper-panel" role="dialog" aria-modal="true" aria-labelledby="single-invite-title">
+        <button class="modal-close" onClick={onClose} aria-label="关闭">×</button>
+        <div class="share-preview-wrap">
+          {previewUrl ? <img src={previewUrl} alt={`${host.nickname}的单人邀请卡`} /> : <div class="poster-loading">正在排版单人邀请卡…</div>}
+        </div>
+        <div class="share-modal-copy">
+          <span class="eyebrow">SINGLE SIDE / INVITE READY</span>
+          <h2 id="single-invite-title">{host.nickname} 的邀请卡</h2>
+          <p>二号一侧保持空白。扫码会打开当前房间并自动填入加入码，对方只需填写昵称即可入座。</p>
+          <div class="share-action-grid">
+            <button class="button button-dark" onClick={download} disabled={!poster}>下载 PNG</button>
+            <button class="button button-dark" onClick={() => void copyInvitation()}>{copied ? '邀请信息已复制 ✓' : '复制房间邀请信息'}</button>
+            {typeof navigator !== 'undefined' && 'share' in navigator && (
+              <button class="button button-accent" onClick={() => void systemShare()} disabled={!poster}>系统分享</button>
+            )}
+          </div>
+          {error && <p class="form-error" role="alert">{error}</p>}
+        </div>
+      </section>
+    </div>
+  );
 }
 
 function RevealedCard({ roomId, data, template }: { roomId: string; data: RevealedAnswer; template: RoomTemplate }) {

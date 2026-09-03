@@ -6,6 +6,7 @@ import type {
   AnswerFieldKey,
   CreateShareResponse,
   RevealedAnswer,
+  RoomTemplate,
   ShareSnapshot,
   ShareSummary,
   ServerEvent,
@@ -49,6 +50,7 @@ import {
   SHARE_ID_PATTERN,
   type ShareRow,
 } from './server/shares';
+import { forkAnswerMedia } from './server/room-fork';
 
 const ROOM_PATH = /^\/api\/rooms\/([a-z2-9]{12})(?:\/(.*))?$/;
 const SHARE_PATH = /^\/api\/shares\/([a-z2-9]{24})(?:\/(.*))?$/;
@@ -72,9 +74,14 @@ function secureHeaders(response: Response) {
   return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
-async function createRoom(request: Request, env: Env) {
-  assertSameOrigin(request);
-  const input = createRoomSchema.parse(await readJson(request));
+interface HostRoomSeed {
+  nickname: string;
+  template: RoomTemplate;
+  answer: AnswerDraft;
+  source?: { roomId: string; participantId: string };
+}
+
+async function createRoomWithHost(request: Request, env: Env, seed: HostRoomSeed) {
   const roomId = randomRoomId();
   const participantId = crypto.randomUUID();
   const joinCode = randomString(6, '0123456789');
@@ -86,24 +93,52 @@ async function createRoom(request: Request, env: Env) {
     hashSecret(token, env.AUTH_PEPPER),
   ]);
   const now = nowIso();
-  await env.DB.batch([
-    env.DB.prepare(
-      `INSERT INTO rooms (id, join_code_hash, status, current_round, version, created_at, last_active_at, expires_at, template_json)
-       VALUES (?, ?, 'waiting_partner', 1, 1, ?, ?, ?, ?)`,
-    ).bind(roomId, joinHash, now, now, expiryIso(new Date(now)), JSON.stringify(input.template)),
-    env.DB.prepare(
-      `INSERT INTO participants (id, room_id, slot, nickname, token_hash, recovery_hash, created_at)
-       VALUES (?, ?, 1, ?, ?, ?, ?)`,
-    ).bind(participantId, roomId, input.nickname, tokenHash, recoveryHash, now),
-    env.DB.prepare('INSERT INTO rounds (room_id, round_number, created_at) VALUES (?, 1, ?)').bind(
-      roomId,
-      now,
-    ),
-    env.DB.prepare(
-      `INSERT INTO answers (room_id, round_number, participant_id, content_json, version, updated_at)
-       VALUES (?, 1, ?, ?, 0, ?)`,
-    ).bind(roomId, participantId, JSON.stringify(createEmptyDraft()), now),
-  ]);
+  const copiedMediaKeys: string[] = [];
+  let answer = answerSchema.parse(seed.answer);
+  try {
+    if (seed.source) {
+      answer = await forkAnswerMedia(
+        answer,
+        {
+          sourceRoomId: seed.source.roomId,
+          sourceParticipantId: seed.source.participantId,
+          targetRoomId: roomId,
+          targetParticipantId: participantId,
+        },
+        async (sourceKey, targetKey) => {
+          const object = await env.AVATARS.get(sourceKey);
+          if (!object) throw new HttpError(409, '原房间中的图片已经不存在，无法完整创建新房间', 'source_media_missing');
+          await env.AVATARS.put(targetKey, object.body, {
+            httpMetadata: object.httpMetadata,
+            customMetadata: object.customMetadata,
+          });
+          copiedMediaKeys.push(targetKey);
+        },
+      );
+    }
+
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO rooms (id, join_code_hash, status, current_round, version, created_at, last_active_at, expires_at, template_json)
+         VALUES (?, ?, 'waiting_partner', 1, 1, ?, ?, ?, ?)`,
+      ).bind(roomId, joinHash, now, now, expiryIso(new Date(now)), JSON.stringify(seed.template)),
+      env.DB.prepare(
+        `INSERT INTO participants (id, room_id, slot, nickname, token_hash, recovery_hash, created_at)
+         VALUES (?, ?, 1, ?, ?, ?, ?)`,
+      ).bind(participantId, roomId, seed.nickname, tokenHash, recoveryHash, now),
+      env.DB.prepare('INSERT INTO rounds (room_id, round_number, created_at) VALUES (?, 1, ?)').bind(
+        roomId,
+        now,
+      ),
+      env.DB.prepare(
+        `INSERT INTO answers (room_id, round_number, participant_id, content_json, version, updated_at)
+         VALUES (?, 1, ?, ?, 0, ?)`,
+      ).bind(roomId, participantId, JSON.stringify(answer), now),
+    ]);
+  } catch (error) {
+    if (copiedMediaKeys.length) await env.AVATARS.delete(copiedMediaKeys);
+    throw error;
+  }
 
   const origin = new URL(request.url).origin;
   return json(
@@ -118,6 +153,41 @@ async function createRoom(request: Request, env: Env) {
       headers: { 'Set-Cookie': createParticipantCookie(roomId, token, isSecureRequest(request)) },
     },
   );
+}
+
+async function createRoom(request: Request, env: Env) {
+  assertSameOrigin(request);
+  const input = createRoomSchema.parse(await readJson(request));
+  return createRoomWithHost(request, env, {
+    nickname: input.nickname,
+    template: input.template,
+    answer: createEmptyDraft(),
+  });
+}
+
+async function forkRoom(request: Request, env: Env, roomId: string, participant: ParticipantRow) {
+  assertSameOrigin(request);
+  if (participant.slot !== 2) {
+    throw new HttpError(403, '只有二号可以用自己的内容创建新房间', 'host_cannot_fork');
+  }
+  const room = await getRoom(env.DB, roomId);
+  if (!room || room.expires_at <= nowIso()) throw new HttpError(410, '原房间已经过期', 'expired');
+  const source = await env.DB.prepare(
+    `SELECT content_json, submitted_at FROM answers
+     WHERE room_id = ? AND round_number = ? AND participant_id = ?`,
+  )
+    .bind(roomId, room.current_round, participant.id)
+    .first<{ content_json: string; submitted_at: string | null }>();
+  if (!source?.submitted_at) {
+    throw new HttpError(409, '请先发布当前内容，再用它创建新房间', 'answer_not_published');
+  }
+
+  return createRoomWithHost(request, env, {
+    nickname: participant.nickname,
+    template: parseRoomTemplate(room.template_json),
+    answer: answerSchema.parse(parseAnswer(source.content_json)),
+    source: { roomId, participantId: participant.id },
+  });
 }
 
 async function proxyMutation(
@@ -643,6 +713,10 @@ async function roomApi(request: Request, env: Env, roomId: string, tail = ''): P
   if (tail === 'shares' && request.method === 'POST') {
     if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
     return createShare(request, env, roomId, participant);
+  }
+  if (tail === 'fork' && request.method === 'POST') {
+    if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
+    return forkRoom(request, env, roomId, participant);
   }
   const sharePosterMatch = tail.match(/^shares\/([a-z2-9]{24})\/poster$/);
   if (sharePosterMatch && request.method === 'POST') {

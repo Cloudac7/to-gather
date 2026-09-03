@@ -8,6 +8,17 @@ import { JoinScreen } from '../src/components/RoomApp';
 describe('recovery form', () => {
   afterEach(() => {
     document.body.replaceChildren();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('prefills the join code embedded in an invitation QR URL', () => {
+    window.history.replaceState({}, '', '/room/abc234def567#join=654321');
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+
+    render(<JoinScreen roomId="abc234def567" full={false} onJoined={() => {}} />, container);
+
+    expect(container.querySelector<HTMLInputElement>('#join-code')?.value).toBe('654321');
   });
 
   it('accepts a valid recovery code after switching from the join form', async () => {

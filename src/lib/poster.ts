@@ -1,5 +1,6 @@
 import QRCode from 'qrcode';
 import type { AnswerDraft, AnswerFieldKey, RoomTemplate } from './types';
+import { createEmptyDraft, EMPTY_ANSWER_IMAGES } from './types';
 
 export interface PosterPerson {
   nickname: string;
@@ -7,6 +8,7 @@ export interface PosterPerson {
   avatarUrl: string;
   answer: AnswerDraft;
   imageUrls: Record<AnswerFieldKey, string | null>;
+  blank?: boolean;
 }
 
 export interface PosterInput {
@@ -14,6 +16,30 @@ export interface PosterInput {
   host: PosterPerson;
   guest: PosterPerson;
   shareUrl?: string;
+  footerDescription?: string;
+  qrCaption?: string;
+}
+
+export function buildSingleInvitePosterInput(
+  template: RoomTemplate,
+  host: PosterPerson,
+  inviteUrl: string,
+): PosterInput {
+  return {
+    template,
+    host,
+    guest: {
+      nickname: '',
+      slot: 2,
+      avatarUrl: '',
+      answer: createEmptyDraft(),
+      imageUrls: { ...EMPTY_ANSWER_IMAGES },
+      blank: true,
+    },
+    shareUrl: inviteUrl,
+    footerDescription: '这一面已经写好，下一面等你来填。',
+    qrCaption: '扫码加入房间填写',
+  };
 }
 
 const WIDTH = 1600;
@@ -240,7 +266,7 @@ function drawAnswerCell(
         layout.textLineHeight,
       );
     }
-  } else {
+  } else if (!person.blank) {
     ctx.fillStyle = INK;
     ctx.font = `800 ${layout.textFontSize}px 'Songti SC', 'STSong', serif`;
     drawTextLines(
@@ -276,12 +302,14 @@ function drawPortrait(
   ctx.rect(x + 3, y + 3, width - 6, height - 6);
   ctx.clip();
   if (loaded) drawCover(ctx, loaded.bitmap, loaded.width, loaded.height, x, y, width, height);
-  ctx.fillStyle = 'rgba(17,17,15,.82)';
-  ctx.fillRect(x, y + height - 74, width, 74);
-  ctx.fillStyle = PAPER;
-  ctx.font = "900 32px 'Songti SC', 'STSong', serif";
-  ctx.textBaseline = 'middle';
-  ctx.fillText(chars(person.nickname, 12), x + 22, y + height - 38);
+  if (!person.blank) {
+    ctx.fillStyle = 'rgba(17,17,15,.82)';
+    ctx.fillRect(x, y + height - 74, width, 74);
+    ctx.fillStyle = PAPER;
+    ctx.font = "900 32px 'Songti SC', 'STSong', serif";
+    ctx.textBaseline = 'middle';
+    ctx.fillText(chars(person.nickname, 12), x + 22, y + height - 38);
+  }
   ctx.restore();
 }
 
@@ -417,7 +445,15 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   ctx.font = "900 44px 'Songti SC', 'STSong', serif";
   ctx.fillText('一起揭晓', 190, footerY + 32);
   ctx.font = '700 22px system-ui, sans-serif';
-  drawTextLines(ctx, '把喜欢、期待和想说的话，做成只属于你们的双人卡片。', 190, footerY + 92, 850, 2, 34);
+  drawTextLines(
+    ctx,
+    input.footerDescription ?? '把喜欢、期待和想说的话，做成只属于你们的双人卡片。',
+    190,
+    footerY + 92,
+    850,
+    2,
+    34,
+  );
   ctx.font = '800 17px system-ui, sans-serif';
   ctx.fillStyle = '#706d65';
   ctx.fillText('TO-GATHER · 30 DAYS', 190, footerY + 176);
@@ -454,7 +490,7 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   ctx.textBaseline = 'top';
   ctx.fillStyle = INK;
   ctx.font = '800 16px system-ui, sans-serif';
-  ctx.fillText('扫码查看完整结果', qrX + qrSize / 2, qrY + qrSize + 12);
+  ctx.fillText(input.qrCaption ?? '扫码查看完整结果', qrX + qrSize / 2, qrY + qrSize + 12);
 
   for (const image of images.values()) image.bitmap.close();
   return new Promise((resolve, reject) => {

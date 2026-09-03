@@ -19,6 +19,7 @@ describe('recovery form', () => {
     render(<JoinScreen roomId="abc234def567" full={false} onJoined={() => {}} />, container);
 
     expect(container.querySelector<HTMLInputElement>('#join-code')?.value).toBe('654321');
+    expect(container.textContent).toContain('你只需填写昵称');
   });
 
   it('accepts a valid recovery code after switching from the join form', async () => {

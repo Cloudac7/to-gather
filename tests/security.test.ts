@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   createParticipantCookie,
+  deriveJoinCode,
   hashSecret,
   participantCookieName,
   randomRoomId,
@@ -15,6 +16,15 @@ describe('room secrets', () => {
 
   it('creates numeric join codes at the requested length', () => {
     expect(randomString(6, '0123456789')).toMatch(/^\d{6}$/);
+  });
+
+  it('derives a stable recoverable join code for each room', async () => {
+    const first = await deriveJoinCode('abcd2345efgh', 'pepper');
+    const repeated = await deriveJoinCode('abcd2345efgh', 'pepper');
+    const otherRoom = await deriveJoinCode('wxyz2345abcd', 'pepper');
+    expect(first).toMatch(/^\d{6}$/);
+    expect(repeated).toBe(first);
+    expect(otherRoom).not.toBe(first);
   });
 
   it('hashes the same secret deterministically and compares it safely', async () => {

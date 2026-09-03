@@ -213,3 +213,9 @@ export interface JoinRoomResponse {
   roomId: string;
   recoveryCode: string;
 }
+
+export interface RecoverJoinCodeResponse {
+  roomId: string;
+  joinCode: string;
+  rotated: boolean;
+}

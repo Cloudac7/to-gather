@@ -111,6 +111,7 @@ textarea { resize: vertical; }
 .segmented button.active, .slot-choice button.active { background: var(--ink); color: white; }
 .code-input { text-align: center; letter-spacing: .3em; font-size: 24px; font-weight: 900; }
 .recovery-input { letter-spacing: .12em; font-size: 18px; }
+.join-code-hint { display: block; margin: -8px 0 18px; color: var(--muted); font-size: 11px; font-weight: 700; }
 
 .room-page { max-width: 1500px; margin: 0 auto; min-height: 100vh; }
 .room-header { margin: 0 calc(50% - 50vw); padding-left: max(20px, calc((100vw - 1500px)/2 + 36px)); padding-right: max(20px, calc((100vw - 1500px)/2 + 36px)); }
@@ -133,6 +134,12 @@ textarea { resize: vertical; }
 .hint-box { padding: 14px; border: 1.5px solid var(--line); background: var(--paper-light); }
 .waiting-actions { display: flex; align-items: stretch; flex-wrap: wrap; gap: 10px; }
 .waiting-actions .button-accent { width: auto; }
+.invite-action-note { margin: 14px 0 0; color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1.6; }
+.host-invite-bar { margin: 24px clamp(20px, 4vw, 58px) 0; padding: 18px 20px; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 20px; box-shadow: 6px 6px 0 var(--ink); }
+.host-invite-bar strong, .host-invite-bar small { display: block; }
+.host-invite-bar strong { margin-top: 6px; font: 900 20px 'Noto Serif SC', serif; }
+.host-invite-bar small { margin-top: 5px; color: var(--muted); font-size: 11px; }
+.host-invite-bar > p { grid-column: 1 / -1; }
 .qr-card { padding: 18px; text-align: center; transform: rotate(2deg); box-shadow: 5px 5px 0 var(--ink); }
 .qr-card img, .qr-placeholder { width: 100%; aspect-ratio: 1; display: block; }
 .qr-card span { display: block; margin-top: 18px; font-size: 13px; font-weight: 900; letter-spacing: .16em; }
@@ -181,6 +188,7 @@ textarea { resize: vertical; }
 .submitted-share-buttons { display: flex; flex-wrap: wrap; gap: 10px; flex: none; }
 .submitted-share-buttons .button { width: auto; }
 .submitted-share-action small { color: var(--muted); font-size: 11px; font-weight: 700; line-height: 1.6; }
+.submitted-panel .submitted-share-note { margin: 14px 0 0; color: var(--muted); font-size: 13px; font-weight: 800; }
 .submitted-panel .submitted-share-hint { margin: 14px 0 0; color: #8f2a17; font-size: 13px; font-weight: 800; }
 .stamp { position: absolute; right: 36px; top: 34px; border: 4px double var(--accent); color: var(--accent); padding: 10px 14px; font-weight: 900; transform: rotate(10deg); }
 .waiting-dots { display: flex; gap: 8px; margin-top: 36px; }
@@ -313,6 +321,8 @@ textarea { resize: vertical; }
   .waiting-layout { grid-template-columns: 1fr; margin: 18px 14px 0; padding: 28px 20px; }
   .waiting-copy h1 { font-size: 48px; }
   .waiting-layout .qr-card { width: min(100%, 220px); }
+  .host-invite-bar { margin: 16px; grid-template-columns: 1fr; }
+  .host-invite-bar .button { width: 100%; margin-top: 8px; }
   .fill-template-heading { margin-bottom: 34px; padding: 24px 10px; }
   .fill-template-heading h1 { font-size: 39px; letter-spacing: -.03em; }
   .fill-template-heading p { font-size: 15px; }

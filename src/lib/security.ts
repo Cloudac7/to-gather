@@ -22,6 +22,23 @@ export async function hashSecret(secret: string, pepper: string) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+export async function deriveJoinCode(roomId: string, pepper: string) {
+  const key = await crypto.subtle.importKey(
+    'raw',
+    encoder.encode(pepper),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const signature = await crypto.subtle.sign(
+    'HMAC',
+    key,
+    encoder.encode(`to-gather:join-code:v1:${roomId}`),
+  );
+  const value = new DataView(signature).getUint32(0);
+  return String(value % 1_000_000).padStart(6, '0');
+}
+
 export async function sha256Hex(value: string) {
   const digest = await crypto.subtle.digest('SHA-256', encoder.encode(value));
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');

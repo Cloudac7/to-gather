@@ -8,6 +8,7 @@ import type {
   CreateRoomResponse,
   CreateShareResponse,
   JoinRoomResponse,
+  RecoverJoinCodeResponse,
   RevealedAnswer,
   RoomTemplate,
   RoomState,
@@ -51,6 +52,21 @@ export default function RoomApp({ roomId }: Props) {
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : '房间加载失败');
     }
+  }
+
+  async function recoverJoinCode() {
+    const recovered = await api<RecoverJoinCodeResponse>(`/api/rooms/${roomId}/join-code`, { method: 'POST' });
+    setShareInfo((current) => {
+      const next: CreateRoomResponse = {
+        roomId,
+        inviteUrl: current?.inviteUrl ?? new URL(`/room/${roomId}`, location.origin).href,
+        joinCode: recovered.joinCode,
+        recoveryCode: current?.recoveryCode ?? '',
+      };
+      sessionStorage.setItem(`duet_invite_${roomId}`, JSON.stringify(next));
+      return next;
+    });
+    return recovered;
   }
 
   useEffect(() => {
@@ -140,6 +156,7 @@ export default function RoomApp({ roomId }: Props) {
         setSecretsDismissed(true);
         setRecoveryCode('');
       }}
+      onRecoverJoinCode={recoverJoinCode}
       onRefresh={refresh}
     />
   );
@@ -170,9 +187,10 @@ function GoneScreen({ expired }: { expired: boolean }) {
 export function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: boolean; onJoined: (code: string) => void }) {
   const [mode, setMode] = useState<'join' | 'recover'>(full ? 'recover' : 'join');
   const [nickname, setNickname] = useState('');
-  const [joinCode, setJoinCode] = useState(() => (
+  const embeddedJoinCode = (
     full || typeof location === 'undefined' ? '' : joinCodeFromHash(location.hash)
-  ));
+  );
+  const [joinCode, setJoinCode] = useState(embeddedJoinCode);
   const [recoveryCode, setRecoveryCode] = useState('');
   const [slot, setSlot] = useState<1 | 2>(full ? 1 : 2);
   const [error, setError] = useState('');
@@ -229,8 +247,9 @@ export function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: b
           <input id="join-name" value={nickname} onInput={(e) => setNickname(e.currentTarget.value)} maxLength={24} autocomplete="nickname" />
           {mode === 'join' ? (
             <>
-              <label for="join-code">六位加入码</label>
+              <label for="join-code">六位加入码{embeddedJoinCode ? '（邀请已自动填入）' : ''}</label>
               <input key="join-code" id="join-code" class="code-input" inputMode="numeric" pattern="[0-9]*" value={joinCode} onInput={(e) => setJoinCode(e.currentTarget.value.replace(/\D/g, '').slice(0, 6))} placeholder="000000" />
+              {embeddedJoinCode && <small class="join-code-hint">你只需填写昵称，即可加入房间。</small>}
             </>
           ) : (
             <>
@@ -253,13 +272,14 @@ export function JoinScreen({ roomId, full, onJoined }: { roomId: string; full: b
   );
 }
 
-function ParticipantRoom({ state, online, shareInfo, recoveryCode, secretsDismissed, onDismissSecrets, onRefresh }: {
+function ParticipantRoom({ state, online, shareInfo, recoveryCode, secretsDismissed, onDismissSecrets, onRecoverJoinCode, onRefresh }: {
   state: AuthenticatedRoomState;
   online: Set<string>;
   shareInfo: CreateRoomResponse | null;
   recoveryCode: string;
   secretsDismissed: boolean;
   onDismissSecrets: () => void;
+  onRecoverJoinCode: () => Promise<RecoverJoinCodeResponse>;
   onRefresh: () => Promise<void>;
 }) {
   const me = state.participants.find((person) => person.isMe)!;
@@ -285,7 +305,7 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, secretsDismis
         </div>
       </header>
 
-      {!secretsDismissed && (shareInfo || recoveryCode) && (
+      {!secretsDismissed && Boolean(recoveryCode || shareInfo?.recoveryCode) && (
         <SecretPanel
           info={shareInfo}
           title={state.template.title}
@@ -294,11 +314,22 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, secretsDismis
         />
       )}
 
-      {me.slot === 1 && guests.length === 0 && (
+      {me.slot === 1 && guests.length === 0 && !me.submitted && (
         <WaitingPanel
           roomId={state.roomId}
           title={state.template.title}
-          shareInfo={secretsDismissed ? null : shareInfo}
+          inviteUrl={inviteUrl}
+          joinCode={shareInfo?.joinCode ?? null}
+          onRecoverJoinCode={onRecoverJoinCode}
+        />
+      )}
+
+      {me.slot === 1 && guests.length > 0 && !me.submitted && (
+        <HostInviteBar
+          title={state.template.title}
+          inviteUrl={inviteUrl}
+          joinCode={shareInfo?.joinCode ?? null}
+          onRecoverJoinCode={onRecoverJoinCode}
         />
       )}
 
@@ -307,6 +338,7 @@ function ParticipantRoom({ state, online, shareInfo, recoveryCode, secretsDismis
         onRefresh={onRefresh}
         inviteUrl={inviteUrl}
         joinCode={me.slot === 1 ? shareInfo?.joinCode ?? null : null}
+        onRecoverJoinCode={onRecoverJoinCode}
       />
 
       {state.publishedAnswers.length > 0 && <PublishedView state={state} onRefresh={onRefresh} />}
@@ -336,40 +368,120 @@ function SecretPanel({ info, title, recoveryCode, onDismiss }: {
   );
 }
 
-function WaitingPanel({ roomId, title, shareInfo }: { roomId: string; title: string; shareInfo: CreateRoomResponse | null }) {
-  const inviteUrl = shareInfo?.inviteUrl ?? location.href;
-  const qrInviteUrl = shareInfo?.joinCode ? directJoinUrl(inviteUrl, shareInfo.joinCode) : inviteUrl;
+function WaitingPanel({ roomId, title, inviteUrl, joinCode, onRecoverJoinCode }: {
+  roomId: string;
+  title: string;
+  inviteUrl: string;
+  joinCode: string | null;
+  onRecoverJoinCode: () => Promise<RecoverJoinCodeResponse>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+  const qrInviteUrl = joinCode ? directJoinUrl(inviteUrl, joinCode) : null;
+
+  async function copyInvitation() {
+    setBusy(true);
+    setError('');
+    try {
+      const recovered = joinCode ? null : await onRecoverJoinCode();
+      const resolvedCode = joinCode ?? recovered?.joinCode ?? null;
+      await navigator.clipboard.writeText(invitationClipboardText(title, inviteUrl, resolvedCode));
+      setNotice(recovered?.rotated ? '已生成新的加入码，此前发出的旧加入码已失效。' : recovered ? '加入码已恢复并保存在当前浏览器会话。' : '');
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1800);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '邀请信息复制失败，请稍后重试。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <section class="waiting-layout">
       <div class="waiting-copy">
         <span class="eyebrow">SEAT 01 / START NOW</span>
         <h1>不用等对方，<br />你可以先填。</h1>
-        <p>把同一个链接或二维码发给多个人，再单独告诉他们六位加入码。每个二号都会和你形成一份独立结果。</p>
-        {shareInfo ? (
-          <div class="invite-code"><small>JOIN CODE</small><strong>{shareInfo.joinCode}</strong></div>
+        <p>把同一份邀请或二维码发给多个人。链接会自动带上加入码，同时保留六位码供对方手动输入。</p>
+        {joinCode ? (
+          <div class="invite-code"><small>JOIN CODE</small><strong>{joinCode}</strong></div>
         ) : (
-          <p class="hint-box">为了安全，加入码只在创建时展示。如果没有保存，请新建房间。</p>
+          <p class="hint-box">加入码没有保存在这台设备上。复制邀请时会先验证一号身份并安全恢复。</p>
         )}
         <div class="waiting-actions">
-          <CopyButton value={invitationClipboardText(title, inviteUrl, shareInfo?.joinCode ?? null)}>复制房间邀请信息</CopyButton>
+          <button class="button button-dark" type="button" onClick={() => void copyInvitation()} disabled={busy}>
+            {busy ? '正在恢复加入码…' : copied ? '邀请信息已复制 ✓' : '复制房间邀请信息'}
+          </button>
           <a class="button button-accent" href="#your-card">开始填写 ↓</a>
         </div>
+        {notice && <p class="invite-action-note" role="status">{notice}</p>}
+        {error && <p class="form-error" role="alert">{error}</p>}
       </div>
       <QrCard value={qrInviteUrl} roomId={roomId} />
     </section>
   );
 }
 
-function QrCard({ value, roomId }: { value: string; roomId: string }) {
+function HostInviteBar({ title, inviteUrl, joinCode, onRecoverJoinCode }: {
+  title: string;
+  inviteUrl: string;
+  joinCode: string | null;
+  onRecoverJoinCode: () => Promise<RecoverJoinCodeResponse>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState('');
+  const [error, setError] = useState('');
+
+  async function recover() {
+    setBusy(true);
+    setError('');
+    try {
+      const result = await onRecoverJoinCode();
+      setNotice(result.rotated
+        ? '已生成新的加入码，此前发出的旧加入码已失效。'
+        : '加入码已恢复并保存在当前浏览器会话。');
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : '加入码恢复失败，请稍后重试。');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section class="host-invite-bar paper-panel">
+      <div>
+        <span class="eyebrow">ROOM INVITATION / HOST ONLY</span>
+        <strong>还可以继续邀请二号</strong>
+        <small>{joinCode ? `当前加入码 ${joinCode}` : '加入码未保存在这台设备上，可凭一号身份恢复。'}</small>
+      </div>
+      {joinCode ? (
+        <CopyButton value={invitationClipboardText(title, inviteUrl, joinCode)}>复制房间邀请信息</CopyButton>
+      ) : (
+        <button class="button button-dark" type="button" onClick={() => void recover()} disabled={busy}>
+          {busy ? '正在恢复…' : '恢复加入码'}
+        </button>
+      )}
+      {notice && <p class="invite-action-note" role="status">{notice}</p>}
+      {error && <p class="form-error" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function QrCard({ value, roomId }: { value: string | null; roomId: string }) {
   const [src, setSrc] = useState('');
   useEffect(() => {
+    if (!value) {
+      setSrc('');
+      return;
+    }
     void QRCode.toDataURL(value, { width: 520, margin: 2, color: { dark: '#111111', light: '#fffef9' }, errorCorrectionLevel: 'M' }).then(setSrc);
   }, [value]);
   return (
     <div class="qr-card paper-panel">
       {src ? <img src={src} alt="房间邀请二维码" /> : <div class="qr-placeholder" />}
-      <span>SCAN TO JOIN</span>
-      <small>{roomId.toUpperCase()}</small>
+      <span>{value ? 'SCAN TO JOIN' : 'RESTORE TO INVITE'}</span>
+      <small>{value ? roomId.toUpperCase() : '复制邀请后生成二维码'}</small>
       {src && <a class="text-button" href={src} download={`to-gather-${roomId}.png`}>下载二维码</a>}
     </div>
   );
@@ -385,11 +497,12 @@ export function RoomTemplateHeading({ template }: { template: RoomTemplate }) {
   );
 }
 
-function FillView({ state, onRefresh, inviteUrl, joinCode }: {
+function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: {
   state: AuthenticatedRoomState;
   onRefresh: () => Promise<void>;
   inviteUrl: string;
   joinCode: string | null;
+  onRecoverJoinCode: () => Promise<RecoverJoinCodeResponse>;
 }) {
   const me = state.participants.find((person) => person.isMe)!;
   const [draft, setDraft] = useState<AnswerDraft>(state.ownDraft ?? createEmptyDraft());
@@ -547,6 +660,7 @@ function FillView({ state, onRefresh, inviteUrl, joinCode }: {
         inviteUrl={inviteUrl}
         joinCode={joinCode}
         publishedAnswer={state.publishedAnswers.find((answer) => answer.participantId === me.id) ?? null}
+        onRecoverJoinCode={onRecoverJoinCode}
       />
     );
   }
@@ -602,27 +716,44 @@ function FillView({ state, onRefresh, inviteUrl, joinCode }: {
   );
 }
 
-export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinCode, publishedAnswer }: {
+export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinCode, publishedAnswer, onRecoverJoinCode }: {
   slot: 1 | 2;
   roomId: string;
   template: RoomTemplate;
   inviteUrl: string;
   joinCode: string | null;
   publishedAnswer: RevealedAnswer | null;
+  onRecoverJoinCode: () => Promise<RecoverJoinCodeResponse>;
 }) {
   const [copied, setCopied] = useState(false);
+  const [recovering, setRecovering] = useState(false);
   const [forking, setForking] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [actionNotice, setActionNotice] = useState('');
   const [inviteCardOpen, setInviteCardOpen] = useState(false);
+  const [inviteCardJoinCode, setInviteCardJoinCode] = useState<string | null>(null);
+
+  async function resolveJoinCode() {
+    if (joinCode) return joinCode;
+    const recovered = await onRecoverJoinCode();
+    setActionNotice(recovered.rotated
+      ? '已生成新的加入码，此前发出的旧加入码已失效。'
+      : '加入码已恢复并保存在当前浏览器会话。');
+    return recovered.joinCode;
+  }
 
   async function copyInvite() {
+    setRecovering(true);
     try {
-      await navigator.clipboard.writeText(invitationClipboardText(template.title, inviteUrl, joinCode));
+      const resolvedCode = await resolveJoinCode();
+      await navigator.clipboard.writeText(invitationClipboardText(template.title, inviteUrl, resolvedCode));
       setActionError('');
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1800);
     } catch {
       setActionError('复制失败，请检查浏览器的剪贴板权限后重试。');
+    } finally {
+      setRecovering(false);
     }
   }
 
@@ -640,17 +771,22 @@ export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinC
     }
   }
 
-  function openInviteCard() {
-    if (!joinCode) {
-      setActionError('当前会话没有保存加入码，无法生成可直接加入的二维码。请使用创建房间时保存的邀请信息。');
-      return;
-    }
+  async function openInviteCard() {
     if (!publishedAnswer) {
       setActionError('已发布内容尚未同步完成，请刷新页面后重试。');
       return;
     }
-    setActionError('');
-    setInviteCardOpen(true);
+    setRecovering(true);
+    try {
+      const resolvedCode = await resolveJoinCode();
+      setInviteCardJoinCode(resolvedCode);
+      setActionError('');
+      setInviteCardOpen(true);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : '加入码恢复失败，请稍后重试。');
+    } finally {
+      setRecovering(false);
+    }
   }
 
   return (
@@ -664,12 +800,12 @@ export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinC
           {slot === 1 ? (
             <>
               <div class="submitted-share-buttons">
-                <button class="button button-accent" type="button" onClick={openInviteCard}>生成单人邀请卡 ↗</button>
-                <button class="button button-dark" type="button" onClick={() => void copyInvite()}>
-                  {copied ? '邀请信息已复制 ✓' : '复制房间邀请信息'}
+                <button class="button button-accent" type="button" onClick={() => void openInviteCard()} disabled={recovering}>生成单人邀请卡 ↗</button>
+                <button class="button button-dark" type="button" onClick={() => void copyInvite()} disabled={recovering}>
+                  {recovering && !joinCode ? '正在恢复加入码…' : copied ? '邀请信息已复制 ✓' : '复制房间邀请信息'}
                 </button>
               </div>
-              <small>{joinCode ? '复制内容包含主标题、房间链接和六位加入码。' : '当前会话没有保存加入码；链接仍可复制，请另行发送此前保存的加入码。'}</small>
+              <small>{joinCode ? '复制内容包含主标题、可直接加入的房间链接和六位加入码。' : '本设备没有保存加入码；复制或生成邀请卡时会由一号身份安全恢复。'}</small>
             </>
           ) : (
             <>
@@ -680,15 +816,16 @@ export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinC
             </>
           )}
         </div>
+        {actionNotice && <p class="submitted-share-note" role="status">{actionNotice}</p>}
         {actionError && <p class="submitted-share-hint" role="alert">{actionError}</p>}
       </section>
-      {inviteCardOpen && publishedAnswer && joinCode && (
+      {inviteCardOpen && publishedAnswer && (inviteCardJoinCode ?? joinCode) && (
         <SingleInviteCardModal
           roomId={roomId}
           template={template}
           host={publishedAnswer}
           inviteUrl={inviteUrl}
-          joinCode={joinCode}
+          joinCode={(inviteCardJoinCode ?? joinCode)!}
           onClose={() => setInviteCardOpen(false)}
         />
       )}
@@ -874,7 +1011,7 @@ export function shareClipboardText(title: string, shareUrl: string) {
 }
 
 export function invitationClipboardText(title: string, inviteUrl: string, joinCode: string | null) {
-  const invitation = shareClipboardText(title, inviteUrl);
+  const invitation = shareClipboardText(title, joinCode ? directJoinUrl(inviteUrl, joinCode) : inviteUrl);
   return joinCode ? `${invitation}\n加入码：${joinCode}` : invitation;
 }
 

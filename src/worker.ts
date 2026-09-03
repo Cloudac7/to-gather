@@ -14,6 +14,7 @@ import type {
 import { ANSWER_FIELD_KEYS, createEmptyDraft } from './lib/types';
 import {
   createParticipantCookie,
+  deriveJoinCode,
   hashSecret,
   isSecureRequest,
   randomRoomId,
@@ -84,7 +85,7 @@ interface HostRoomSeed {
 async function createRoomWithHost(request: Request, env: Env, seed: HostRoomSeed) {
   const roomId = randomRoomId();
   const participantId = crypto.randomUUID();
-  const joinCode = randomString(6, '0123456789');
+  const joinCode = await deriveJoinCode(roomId, env.AUTH_PEPPER);
   const recoveryCode = randomString(12);
   const token = randomToken();
   const [joinHash, recoveryHash, tokenHash] = await Promise.all([
@@ -680,6 +681,9 @@ async function roomApi(request: Request, env: Env, roomId: string, tail = ''): P
   }
   if (request.method === 'POST' && tail === 'join') return joinRoom(request, env, roomId);
   if (request.method === 'POST' && tail === 'recover') return recoverRoom(request, env, roomId);
+  if (request.method === 'POST' && tail === 'join-code') {
+    return proxyMutation(request, env, roomId, 'join-code', participant);
+  }
   if (request.method === 'GET' && tail === 'ws') {
     if (!participant) throw new HttpError(401, '请先加入房间', 'unauthorized');
     const headers = new Headers(request.headers);
@@ -828,6 +832,7 @@ export class RoomCoordinator extends DurableObject<Env> {
       if (path === '/answer-image') return this.setAnswerImage(request, participantId);
       if (path === '/submit') return this.submit(request, participantId);
       if (path === '/reopen') return this.voteToReopen(request, participantId);
+      if (path === '/join-code') return this.recoverJoinCode(participantId);
       throw new HttpError(404, '操作不存在', 'not_found');
     } catch (error) {
       if (error instanceof ZodError) return json({ error: 'validation_error', message: '填写内容格式不正确' }, { status: 400 });
@@ -948,6 +953,31 @@ export class RoomCoordinator extends DurableObject<Env> {
     ]);
     this.broadcast({ type: 'partner_joined' });
     return json({ roomId, recoveryCode, token }, { status: 201 });
+  }
+
+  private async recoverJoinCode(participantId: string) {
+    const { room, participant } = await this.roomAndParticipant(participantId);
+    if (participant.slot !== 1) {
+      throw new HttpError(403, '只有房间创建者可以恢复加入码', 'host_only');
+    }
+    const joinCode = await deriveJoinCode(room.id, this.env.AUTH_PEPPER);
+    const joinHash = await hashSecret(joinCode, this.env.AUTH_PEPPER);
+    const rotated = !timingSafeEqual(joinHash, room.join_code_hash);
+    if (rotated) {
+      const now = nowIso();
+      await this.env.DB.prepare(
+        `UPDATE rooms SET join_code_hash = ?, version = version + 1, last_active_at = ?, expires_at = ?
+         WHERE id = ?`,
+      )
+        .bind(joinHash, now, expiryIso(new Date(now)), room.id)
+        .run();
+    } else {
+      await touchRoom(this.env.DB, room.id);
+    }
+    return json(
+      { roomId: room.id, joinCode, rotated },
+      { headers: { 'Cache-Control': 'no-store' } },
+    );
   }
 
   private roomIdFromObject() {

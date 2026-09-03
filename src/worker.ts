@@ -52,6 +52,7 @@ import {
   type ShareRow,
 } from './server/shares';
 import { forkAnswerMedia } from './server/room-fork';
+import { musicArtworkApi, musicSearchApi } from './server/music';
 
 const ROOM_PATH = /^\/api\/rooms\/([a-z2-9]{12})(?:\/(.*))?$/;
 const SHARE_PATH = /^\/api\/shares\/([a-z2-9]{24})(?:\/(.*))?$/;
@@ -363,7 +364,9 @@ async function uploadAnswerImage(
     return response;
   }
   const result = (await response.json()) as { version: number; previousKey: string | null };
-  if (result.previousKey && result.previousKey !== key) await env.AVATARS.delete(result.previousKey);
+  if (result.previousKey && result.previousKey !== key) {
+    await deleteRoomMediaIfUnreferenced(env, result.previousKey);
+  }
   return json({ imageKey: key, version: result.version });
 }
 
@@ -384,7 +387,7 @@ async function deleteAnswerImage(
   );
   if (!response.ok) return response;
   const result = (await response.json()) as { version: number; previousKey: string | null };
-  if (result.previousKey) await env.AVATARS.delete(result.previousKey);
+  if (result.previousKey) await deleteRoomMediaIfUnreferenced(env, result.previousKey);
   return json({ imageKey: null, version: result.version });
 }
 
@@ -424,6 +427,18 @@ function collectSnapshotMedia(snapshot: ShareSnapshot) {
     for (const key of Object.values(person.answer.imageKeys)) if (key) keys.add(key);
   }
   return [...keys];
+}
+
+async function deleteRoomMediaIfUnreferenced(env: Env, objectKey: string) {
+  const reference = await env.DB.prepare(
+    `SELECT 1 AS found
+     FROM share_assets sa JOIN shares s ON s.id = sa.share_id
+     WHERE sa.object_key = ? AND s.status IN ('pending', 'active') AND s.expires_at > ?
+     LIMIT 1`,
+  )
+    .bind(objectKey, nowIso())
+    .first<{ found: number }>();
+  if (!reference) await env.AVATARS.delete(objectKey);
 }
 
 function shareSummary(request: Request, row: ShareRow, pairNickname: string): ShareSummary {
@@ -598,13 +613,22 @@ async function releaseShareAssets(env: Env, row: ShareRow) {
   if (row.poster_key) await env.AVATARS.delete(row.poster_key);
   await env.DB.prepare('DELETE FROM share_assets WHERE share_id = ?').bind(row.id).run();
   const roomStillExists = Boolean(await getRoom(env.DB, row.room_id));
-  if (!roomStillExists) {
-    for (const { object_key: objectKey } of assets.results) {
-      const reference = await env.DB.prepare('SELECT 1 AS found FROM share_assets WHERE object_key = ? LIMIT 1')
-        .bind(objectKey)
-        .first<{ found: number }>();
-      if (!reference) await env.AVATARS.delete(objectKey);
+  const roomMedia = new Set<string>();
+  if (roomStillExists) {
+    const answers = await env.DB.prepare('SELECT content_json FROM answers WHERE room_id = ?')
+      .bind(row.room_id)
+      .all<{ content_json: string }>();
+    for (const answerRow of answers.results) {
+      const answer = parseAnswer(answerRow.content_json);
+      if (answer.avatarKey) roomMedia.add(answer.avatarKey);
+      for (const imageKey of Object.values(answer.imageKeys)) if (imageKey) roomMedia.add(imageKey);
     }
+  }
+  for (const { object_key: objectKey } of assets.results) {
+    const reference = await env.DB.prepare('SELECT 1 AS found FROM share_assets WHERE object_key = ? LIMIT 1')
+      .bind(objectKey)
+      .first<{ found: number }>();
+    if (!reference && !roomMedia.has(objectKey)) await env.AVATARS.delete(objectKey);
   }
 }
 
@@ -738,14 +762,19 @@ async function roomApi(request: Request, env: Env, roomId: string, tail = ''): P
   if (tail === 'submit' && request.method === 'POST') {
     return proxyMutation(request, env, roomId, 'submit', participant);
   }
+  if (tail === 'edit' && request.method === 'POST') {
+    return proxyMutation(request, env, roomId, 'edit', participant);
+  }
   if (tail === 'reopen-vote' && request.method === 'POST') {
     return proxyMutation(request, env, roomId, 'reopen', participant);
   }
   throw new HttpError(404, '接口不存在', 'not_found');
 }
 
-async function apiFetch(request: Request, env: Env) {
+async function apiFetch(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
+  if (url.pathname === '/api/music/search') return musicSearchApi(request, ctx);
+  if (url.pathname === '/api/music/artwork') return musicArtworkApi(request, ctx);
   if (request.method === 'POST' && url.pathname === '/api/rooms') return createRoom(request, env);
   const shareMatch = url.pathname.match(SHARE_PATH);
   if (shareMatch && request.method === 'GET') {
@@ -831,6 +860,7 @@ export class RoomCoordinator extends DurableObject<Env> {
       if (path === '/avatar') return this.setAvatar(request, participantId);
       if (path === '/answer-image') return this.setAnswerImage(request, participantId);
       if (path === '/submit') return this.submit(request, participantId);
+      if (path === '/edit') return this.editPublishedAnswer(participantId);
       if (path === '/reopen') return this.voteToReopen(request, participantId);
       if (path === '/join-code') return this.recoverJoinCode(participantId);
       throw new HttpError(404, '操作不存在', 'not_found');
@@ -1044,7 +1074,9 @@ export class RoomCoordinator extends DurableObject<Env> {
         room.id,
       ),
     ]);
-    if (previous.avatarKey && previous.avatarKey !== key) await this.env.AVATARS.delete(previous.avatarKey);
+    if (previous.avatarKey && previous.avatarKey !== key) {
+      await deleteRoomMediaIfUnreferenced(this.env, previous.avatarKey);
+    }
     return json({ avatarKey: key, version: row.version + 1 });
   }
 
@@ -1121,6 +1153,40 @@ export class RoomCoordinator extends DurableObject<Env> {
     return json({ status: 'published' });
   }
 
+  private async editPublishedAnswer(participantId: string) {
+    const { room } = await this.roomAndParticipant(participantId);
+    const row = await this.env.DB.prepare(
+      'SELECT version, submitted_at FROM answers WHERE room_id = ? AND round_number = ? AND participant_id = ?',
+    )
+      .bind(room.id, room.current_round, participantId)
+      .first<{ version: number; submitted_at: string | null }>();
+    if (!row) throw new HttpError(404, '答案不存在', 'not_found');
+    if (!row.submitted_at) return json({ version: row.version });
+
+    const guest = await this.env.DB.prepare(
+      'SELECT 1 AS found FROM participants WHERE room_id = ? AND slot = 2 LIMIT 1',
+    )
+      .bind(room.id)
+      .first<{ found: number }>();
+    const now = nowIso();
+    const nextVersion = row.version + 1;
+    await this.env.DB.batch([
+      this.env.DB.prepare(
+        `UPDATE answers SET submitted_at = NULL, version = ?, updated_at = ?
+         WHERE room_id = ? AND round_number = ? AND participant_id = ?`,
+      ).bind(nextVersion, now, room.id, room.current_round, participantId),
+      this.env.DB.prepare(
+        `UPDATE rooms SET status = ?, version = version + 1, last_active_at = ?, expires_at = ?
+         WHERE id = ?`,
+      ).bind(guest ? 'filling' : 'waiting_partner', now, expiryIso(new Date(now)), room.id),
+      this.env.DB.prepare(
+        'DELETE FROM reopen_votes WHERE room_id = ? AND round_number = ?',
+      ).bind(room.id, room.current_round),
+    ]);
+    this.broadcast({ type: 'submission_changed' });
+    return json({ version: nextVersion });
+  }
+
   private async voteToReopen(_request: Request, participantId: string) {
     const { room } = await this.roomAndParticipant(participantId);
     if (!['revealed', 'reopen_pending'].includes(room.status)) {
@@ -1178,7 +1244,7 @@ export default {
   async fetch(request, env, ctx) {
     try {
       const url = new URL(request.url);
-      if (url.pathname.startsWith('/api/')) return secureHeaders(await apiFetch(request, env));
+      if (url.pathname.startsWith('/api/')) return secureHeaders(await apiFetch(request, env, ctx));
       return secureHeaders(await handle(request, env, ctx));
     } catch (error) {
       if (error instanceof ZodError) {

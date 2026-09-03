@@ -10,7 +10,13 @@ import type {
   ShareStatus,
   ShareSummary,
 } from '../lib/types';
-import { createEmptyDraft, DEFAULT_ROOM_TEMPLATE, EMPTY_ANSWER_IMAGES } from '../lib/types';
+import {
+  createEmptyDraft,
+  DEFAULT_ROOM_TEMPLATE,
+  EMPTY_ANSWER_IMAGES,
+  EMPTY_MUSIC_SELECTIONS,
+  MUSIC_ROOM_TEMPLATE,
+} from '../lib/types';
 import { hashSecret, participantCookieName, readCookie } from '../lib/security';
 
 export interface RoomRow {
@@ -82,6 +88,7 @@ export function parseAnswer(content: string): AnswerDraft {
       ...createEmptyDraft(),
       ...parsed,
       imageKeys: { ...EMPTY_ANSWER_IMAGES, ...(parsed.imageKeys ?? {}) },
+      musicSelections: { ...EMPTY_MUSIC_SELECTIONS, ...(parsed.musicSelections ?? {}) },
     };
   } catch {
     return createEmptyDraft();
@@ -91,13 +98,20 @@ export function parseAnswer(content: string): AnswerDraft {
 export function parseRoomTemplate(content: string | null | undefined): RoomTemplate {
   try {
     const parsed = JSON.parse(content ?? '') as Partial<RoomTemplate>;
+    const base = parsed.variant === 'music' ? MUSIC_ROOM_TEMPLATE : DEFAULT_ROOM_TEMPLATE;
     return {
-      ...DEFAULT_ROOM_TEMPLATE,
+      ...base,
       ...parsed,
-      fieldLabels: { ...DEFAULT_ROOM_TEMPLATE.fieldLabels, ...(parsed.fieldLabels ?? {}) },
+      variant: parsed.variant === 'music' ? 'music' : 'classic',
+      fieldLabels: { ...base.fieldLabels, ...(parsed.fieldLabels ?? {}) },
+      fieldTypes: { ...base.fieldTypes, ...(parsed.fieldTypes ?? {}) },
     };
   } catch {
-    return { ...DEFAULT_ROOM_TEMPLATE, fieldLabels: { ...DEFAULT_ROOM_TEMPLATE.fieldLabels } };
+    return {
+      ...DEFAULT_ROOM_TEMPLATE,
+      fieldLabels: { ...DEFAULT_ROOM_TEMPLATE.fieldLabels },
+      fieldTypes: { ...DEFAULT_ROOM_TEMPLATE.fieldTypes },
+    };
   }
 }
 

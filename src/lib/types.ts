@@ -25,8 +25,31 @@ export type AnswerFieldKey = (typeof ANSWER_FIELD_KEYS)[number];
 export type GridAnswerFieldKey = Exclude<AnswerFieldKey, 'message'>;
 export type AnswerImageMap = Record<AnswerFieldKey, string | null>;
 export type AnswerImageUrlMap = Record<AnswerFieldKey, string | null>;
+export type RoomVariant = 'classic' | 'music';
+export type MusicEntityKind = 'artist' | 'album' | 'song';
+export type MusicFieldType = MusicEntityKind | 'custom';
+export type MusicProvider = 'itunes' | 'theaudiodb';
+
+export interface MusicSelection {
+  provider: MusicProvider;
+  id: number;
+  kind: MusicEntityKind;
+  title: string;
+  artistName: string;
+  collectionName: string | null;
+  artworkUrl: string | null;
+  storeUrl: string | null;
+}
+
+export type MusicSelectionMap = Record<AnswerFieldKey, MusicSelection | null>;
+export type MusicSearchResult = MusicSelection;
+
+export interface MusicSearchResponse {
+  results: MusicSearchResult[];
+}
 
 export const DEFAULT_ROOM_TEMPLATE = {
+  variant: 'classic',
   title: '这样的两个人，是亲友？',
   subtitle: '不知道啊，我们就玩到一起了',
   fieldLabels: {
@@ -40,15 +63,68 @@ export const DEFAULT_ROOM_TEMPLATE = {
     curiousAbout: '想问但一直没认真了解的',
     message: '自由发言（搏击）区',
   },
+  fieldTypes: {
+    favoriteAnimal: 'custom',
+    favoriteColor: 'custom',
+    favoritePerson: 'custom',
+    favoriteSong: 'custom',
+    mbti: 'custom',
+    recentProduct: 'custom',
+    dreamActivity: 'custom',
+    curiousAbout: 'custom',
+    message: 'custom',
+  },
+} satisfies RoomTemplate;
+
+export const MUSIC_ROOM_TEMPLATE = {
+  variant: 'music',
+  title: '靠 我的歌品真他妈牛逼',
+  subtitle: '亲友你懂我的歌品',
+  fieldLabels: {
+    favoriteAnimal: '最喜欢的歌手',
+    favoriteColor: '最喜欢的专辑',
+    favoritePerson: '循环最多的歌曲',
+    favoriteSong: '最喜欢的歌词',
+    mbti: '最喜欢的华语歌',
+    recentProduct: '最近听上的歌',
+    dreamActivity: '最想给对面推荐的歌',
+    curiousAbout: '最喜欢的其他语言的歌曲',
+    message: '自由发言区',
+  },
+  fieldTypes: {
+    favoriteAnimal: 'artist',
+    favoriteColor: 'album',
+    favoritePerson: 'song',
+    favoriteSong: 'song',
+    mbti: 'song',
+    recentProduct: 'song',
+    dreamActivity: 'song',
+    curiousAbout: 'song',
+    message: 'custom',
+  },
 } satisfies RoomTemplate;
 
 export interface RoomTemplate {
+  variant: RoomVariant;
   title: string;
   subtitle: string;
   fieldLabels: Record<AnswerFieldKey, string>;
+  fieldTypes: Record<AnswerFieldKey, MusicFieldType>;
 }
 
 export const EMPTY_ANSWER_IMAGES: AnswerImageMap = {
+  favoriteAnimal: null,
+  favoriteColor: null,
+  favoritePerson: null,
+  favoriteSong: null,
+  mbti: null,
+  recentProduct: null,
+  dreamActivity: null,
+  curiousAbout: null,
+  message: null,
+};
+
+export const EMPTY_MUSIC_SELECTIONS: MusicSelectionMap = {
   favoriteAnimal: null,
   favoriteColor: null,
   favoritePerson: null,
@@ -72,6 +148,7 @@ export interface AnswerDraft {
   message: string;
   avatarKey: string | null;
   imageKeys: AnswerImageMap;
+  musicSelections: MusicSelectionMap;
 }
 
 export const EMPTY_DRAFT: AnswerDraft = {
@@ -86,10 +163,15 @@ export const EMPTY_DRAFT: AnswerDraft = {
   message: '',
   avatarKey: null,
   imageKeys: { ...EMPTY_ANSWER_IMAGES },
+  musicSelections: { ...EMPTY_MUSIC_SELECTIONS },
 };
 
 export function createEmptyDraft(): AnswerDraft {
-  return { ...EMPTY_DRAFT, imageKeys: { ...EMPTY_ANSWER_IMAGES } };
+  return {
+    ...EMPTY_DRAFT,
+    imageKeys: { ...EMPTY_ANSWER_IMAGES },
+    musicSelections: { ...EMPTY_MUSIC_SELECTIONS },
+  };
 }
 
 export interface ParticipantView {

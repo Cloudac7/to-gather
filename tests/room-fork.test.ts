@@ -19,6 +19,19 @@ describe('forking a guest answer into a new room', () => {
         ...EMPTY_DRAFT.imageKeys,
         favoriteAnimal: `${context.sourceRoomId}/${context.sourceParticipantId}/answers/favoriteAnimal/answer.webp`,
       },
+      musicSelections: {
+        ...EMPTY_DRAFT.musicSelections,
+        favoritePerson: {
+          provider: 'itunes' as const,
+          id: 42,
+          kind: 'song' as const,
+          title: '夜曲',
+          artistName: '周杰伦',
+          collectionName: '十一月的萧邦',
+          artworkUrl: 'https://is1-ssl.mzstatic.com/image/thumb/example/600x600bb.jpg',
+          storeUrl: 'https://music.apple.com/cn/album/example/42',
+        },
+      },
     };
     const copyMedia = vi.fn(async () => undefined);
 
@@ -30,6 +43,7 @@ describe('forking a guest answer into a new room', () => {
       new RegExp(`^${context.targetRoomId}/${context.targetParticipantId}/answers/favoriteAnimal/.+\\.webp$`),
     );
     expect(copyMedia).toHaveBeenCalledTimes(2);
+    expect(forked.musicSelections.favoritePerson?.title).toBe('夜曲');
     expect(source.avatarKey).toContain(context.sourceRoomId);
   });
 

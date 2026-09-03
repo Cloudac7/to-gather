@@ -67,4 +67,11 @@ describe('answer validation', () => {
   it('rejects overlong free text', () => {
     expect(answerSchema.safeParse({ ...EMPTY_DRAFT, message: 'x'.repeat(501) }).success).toBe(false);
   });
+
+  it('accepts explicit line breaks in answer fields', () => {
+    expect(answerSchema.safeParse({
+      ...EMPTY_DRAFT,
+      favoriteAnimal: '第一行\n第二行',
+    }).success).toBe(true);
+  });
 });

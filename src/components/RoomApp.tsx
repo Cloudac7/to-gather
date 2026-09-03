@@ -8,6 +8,9 @@ import type {
   CreateRoomResponse,
   CreateShareResponse,
   JoinRoomResponse,
+  MusicEntityKind,
+  MusicSearchResponse,
+  MusicSelection,
   RecoverJoinCodeResponse,
   RevealedAnswer,
   RoomTemplate,
@@ -17,6 +20,7 @@ import type {
 } from '../lib/types';
 import { createEmptyDraft, EMPTY_ANSWER_IMAGES } from '../lib/types';
 import { CARD_FIELDS } from '../lib/card';
+import { musicArtworkProxyUrl, musicProviderName, musicSelectionText } from '../lib/music';
 import { buildSingleInvitePosterInput, generatePoster, type PosterInput, type PosterPerson } from '../lib/poster';
 
 interface Props {
@@ -561,6 +565,23 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
     setDirty(true);
   }
 
+  function selectMusic(field: AnswerFieldKey, selection: MusicSelection) {
+    setDraft((current) => ({
+      ...current,
+      [field]: current[field] || musicSelectionText(selection),
+      musicSelections: { ...current.musicSelections, [field]: selection },
+    }));
+    setDirty(true);
+  }
+
+  function clearMusic(field: AnswerFieldKey) {
+    setDraft((current) => ({
+      ...current,
+      musicSelections: { ...current.musicSelections, [field]: null },
+    }));
+    setDirty(true);
+  }
+
   async function uploadAvatar(file: File) {
     setUploading(true);
     setError('');
@@ -636,12 +657,13 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
 
   async function submit() {
     const hasText = fields.some((field) => Boolean(draft[field.key])) || Boolean(draft.message);
-    const hasImage = Object.values(draft.imageKeys).some(Boolean);
+    const hasImage = Object.values(draft.imageKeys).some(Boolean)
+      || Object.values(draft.musicSelections).some(Boolean);
     if (!draft.avatarKey || (!hasText && !hasImage)) {
-      setError('请上传头像，并至少填写一段文字或上传一张答案图片');
+      setError('请上传头像，并至少填写一段文字、选择一项音乐或上传一张答案图片');
       return;
     }
-    if (!window.confirm('发布后内容会锁定。双方都发布后，任意一方都可以生成包含昵称、头像、文字和图片的公开分享。确认发布即表示你同意这项规则。')) return;
+    if (!window.confirm('发布后对方将能看到这份内容；你之后仍可撤回修改。已经生成的公开分享是独立快照，不会随修改变化。确认发布吗？')) return;
     try {
       if (dirty) await save(draft);
       await api(`/api/rooms/${state.roomId}/submit`, { method: 'POST' });
@@ -661,6 +683,10 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
         joinCode={joinCode}
         publishedAnswer={state.publishedAnswers.find((answer) => answer.participantId === me.id) ?? null}
         onRecoverJoinCode={onRecoverJoinCode}
+        onEdit={async () => {
+          await api(`/api/rooms/${state.roomId}/edit`, { method: 'POST' });
+          await onRefresh();
+        }}
       />
     );
   }
@@ -678,6 +704,16 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
           {fields.map((field, index) => (
             <label class={field.long ? 'field-block field-wide' : 'field-block'} key={field.key}>
               <span><b>{String(index + 1).padStart(2, '0')}</b>{state.template.fieldLabels[field.key]}</span>
+              {state.template.variant === 'music' && state.template.fieldTypes[field.key] !== 'custom' && (
+                <MusicSearchField
+                  field={field.key}
+                  entity={state.template.fieldTypes[field.key] as MusicEntityKind}
+                  selection={draft.musicSelections[field.key]}
+                  disabled={submitted}
+                  onSelect={(selection) => selectMusic(field.key, selection)}
+                  onClear={() => clearMusic(field.key)}
+                />
+              )}
               <AnswerImageEditor
                 roomId={state.roomId}
                 field={field.key}
@@ -686,15 +722,28 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
                 onFile={(file) => void uploadAnswerImage(field.key, file)}
                 onRemove={() => void removeAnswerImage(field.key)}
               />
-              {field.long ? (
-                <textarea value={draft[field.key]} onInput={(e) => update(field.key, e.currentTarget.value)} maxLength={field.maxLength} placeholder={`${field.placeholder}（文字可选）`} rows={3} />
-              ) : (
-                <input value={draft[field.key]} onInput={(e) => update(field.key, e.currentTarget.value)} maxLength={field.maxLength} placeholder={`${field.placeholder}（文字可选）`} />
-              )}
+              <textarea
+                class="answer-text-input"
+                value={draft[field.key]}
+                onInput={(event) => update(field.key, event.currentTarget.value)}
+                maxLength={field.maxLength}
+                placeholder={`${field.placeholder}（文字可选，可换行）`}
+                rows={field.long ? 3 : 2}
+              />
             </label>
           ))}
           <label class="field-block field-wide message-field">
             <span><b>09</b>{state.template.fieldLabels.message}</span>
+            {state.template.variant === 'music' && state.template.fieldTypes.message !== 'custom' && (
+              <MusicSearchField
+                field="message"
+                entity={state.template.fieldTypes.message}
+                selection={draft.musicSelections.message}
+                disabled={submitted}
+                onSelect={(selection) => selectMusic('message', selection)}
+                onClear={() => clearMusic('message')}
+              />
+            )}
             <AnswerImageEditor
               roomId={state.roomId}
               field="message"
@@ -709,14 +758,14 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
       </div>
       {error && <p class="form-error submit-error" role="alert">{error}</p>}
       <div class="submit-row">
-        <p>发布前只有你能看到草稿；发布后不能修改。</p>
+        <p>发布前只有你能看到草稿；发布后仍可撤回修改，重新发布前对方看不到更新。</p>
         <button class="button button-accent button-large" onClick={submit} disabled={saving || uploading || Boolean(uploadingField)}>发布我的结果 →</button>
       </div>
     </section>
   );
 }
 
-export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinCode, publishedAnswer, onRecoverJoinCode }: {
+export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinCode, publishedAnswer, onRecoverJoinCode, onEdit }: {
   slot: 1 | 2;
   roomId: string;
   template: RoomTemplate;
@@ -724,10 +773,12 @@ export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinC
   joinCode: string | null;
   publishedAnswer: RevealedAnswer | null;
   onRecoverJoinCode: () => Promise<RecoverJoinCodeResponse>;
+  onEdit: () => Promise<void>;
 }) {
   const [copied, setCopied] = useState(false);
   const [recovering, setRecovering] = useState(false);
   const [forking, setForking] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [actionError, setActionError] = useState('');
   const [actionNotice, setActionNotice] = useState('');
   const [inviteCardOpen, setInviteCardOpen] = useState(false);
@@ -789,6 +840,18 @@ export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinC
     }
   }
 
+  async function editPublished() {
+    if (!window.confirm('撤回后，你的内容会暂时对其他参与者隐藏，修改完成后需要重新发布。已经生成的公开分享不会变化。继续吗？')) return;
+    setEditing(true);
+    setActionError('');
+    try {
+      await onEdit();
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : '暂时无法进入编辑，请稍后重试。');
+      setEditing(false);
+    }
+  }
+
   return (
     <>
       <section class="submitted-panel paper-panel">
@@ -797,8 +860,9 @@ export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinC
         <h1>你的这一面，<br />已经发布。</h1>
         <p>{slot === 1 ? '所有加入本房间的二号都能看到你；你也能在下方看到每位已发布的二号。' : '一号现在可以看到你的结果；其他二号无法看到。'}</p>
         <div class="submitted-share-action">
-          {slot === 1 ? (
-            <>
+          <div class="submitted-action-block">
+            {slot === 1 ? (
+              <>
               <div class="submitted-share-buttons">
                 <button class="button button-accent" type="button" onClick={() => void openInviteCard()} disabled={recovering}>生成单人邀请卡 ↗</button>
                 <button class="button button-dark" type="button" onClick={() => void copyInvite()} disabled={recovering}>
@@ -806,15 +870,22 @@ export function PublishedConfirmation({ slot, roomId, template, inviteUrl, joinC
                 </button>
               </div>
               <small>{joinCode ? '复制内容包含主标题、可直接加入的房间链接和六位加入码。' : '本设备没有保存加入码；复制或生成邀请卡时会由一号身份安全恢复。'}</small>
-            </>
-          ) : (
-            <>
-              <button class="button button-dark" type="button" onClick={() => void forkAsHost()} disabled={forking}>
-                {forking ? '正在复制内容并建房…' : '用我的内容创建新房间 →'}
-              </button>
-              <small>当前文字、头像、答案图片和卡片标题会成为新房间的可编辑草稿，你将担任一号。</small>
-            </>
-          )}
+              </>
+            ) : (
+              <>
+                <button class="button button-dark" type="button" onClick={() => void forkAsHost()} disabled={forking}>
+                  {forking ? '正在复制内容并建房…' : '用我的内容创建新房间 →'}
+                </button>
+                <small>当前文字、头像、答案图片和卡片标题会成为新房间的可编辑草稿，你将担任一号。</small>
+              </>
+            )}
+          </div>
+          <div class="submitted-action-block submitted-edit-block">
+            <button class="button" type="button" onClick={() => void editPublished()} disabled={editing || recovering || forking}>
+              {editing ? '正在撤回发布…' : '修改已发布内容'}
+            </button>
+            <small>撤回后需要重新发布；已经生成的公开分享仍保留原内容。</small>
+          </div>
         </div>
         {actionNotice && <p class="submitted-share-note" role="status">{actionNotice}</p>}
         {actionError && <p class="submitted-share-hint" role="alert">{actionError}</p>}
@@ -869,6 +940,126 @@ function AnswerImageEditor({ roomId, field, imageKey, busy, onFile, onRemove }: 
         }}
         aria-label={`上传 ${field} 的答案图片`}
       />
+    </div>
+  );
+}
+
+function MusicSearchField({ field, entity, selection, disabled, onSelect, onClear }: {
+  field: AnswerFieldKey;
+  entity: MusicEntityKind;
+  selection: MusicSelection | null;
+  disabled: boolean;
+  onSelect: (selection: MusicSelection) => void;
+  onClear: () => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState<MusicSelection[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [open, setOpen] = useState(false);
+  const entityName = entity === 'artist' ? '歌手' : entity === 'album' ? '专辑' : '歌曲';
+
+  useEffect(() => {
+    const term = query.trim();
+    if (term.length < 2) {
+      setResults([]);
+      setLoading(false);
+      setError('');
+      return;
+    }
+    let stopped = false;
+    const controller = new AbortController();
+    setLoading(true);
+    const timer = window.setTimeout(() => {
+      setError('');
+      void api<MusicSearchResponse>(
+        `/api/music/search?${new URLSearchParams({ term, entity }).toString()}`,
+        { signal: controller.signal },
+      ).then((payload) => {
+        if (stopped) return;
+        setResults(payload.results);
+        setOpen(true);
+      }).catch((caught) => {
+        if (stopped || (caught instanceof DOMException && caught.name === 'AbortError')) return;
+        setResults([]);
+        setError(caught instanceof Error ? caught.message : '搜索失败');
+      }).finally(() => {
+        if (!stopped) setLoading(false);
+      });
+    }, 350);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [query, entity]);
+
+  if (selection) {
+    const artwork = musicArtworkProxyUrl(selection.artworkUrl);
+    return (
+      <div class="music-selection">
+        {artwork ? <img src={artwork} alt={`${selection.title}封面`} /> : <div class="music-artwork-fallback">♪</div>}
+        <div>
+          <strong>{selection.title}</strong>
+          <span>{selection.artistName || selection.collectionName || entityName}</span>
+          <small>
+            {selection.storeUrl
+              ? <a href={selection.storeUrl} target="_blank" rel="noreferrer">由 {musicProviderName(selection.provider)} 提供 ↗</a>
+              : `由 ${musicProviderName(selection.provider)} 提供`}
+          </small>
+        </div>
+        <button type="button" class="text-button danger" onClick={onClear} disabled={disabled}>清除</button>
+      </div>
+    );
+  }
+
+  return (
+    <div class="music-search">
+      <div class="music-search-input">
+        <span aria-hidden="true">♫</span>
+        <input
+          value={query}
+          onInput={(event) => {
+            setQuery(event.currentTarget.value);
+            setOpen(true);
+            setResults([]);
+            setError('');
+          }}
+          onFocus={() => setOpen(true)}
+          placeholder={`搜索${entityName}名称`}
+          aria-label={`为 ${field} 搜索${entityName}`}
+          autocomplete="off"
+          disabled={disabled}
+        />
+        {loading && <small>搜索中…</small>}
+      </div>
+      {open && query.trim().length >= 2 && (
+        <div class="music-results" role="listbox">
+          {!loading && results.length === 0 && !error && <p>没找到，你仍可以手动填写。</p>}
+          {error && <p role="alert">{error}，你仍可以手动填写。</p>}
+          {results.map((result) => {
+            const artwork = musicArtworkProxyUrl(result.artworkUrl);
+            return (
+              <button
+                type="button"
+                role="option"
+                key={`${result.kind}-${result.id}`}
+                onClick={() => {
+                  onSelect(result);
+                  setOpen(false);
+                  setQuery('');
+                }}
+              >
+                {artwork ? <img src={artwork} alt="" /> : <span class="music-artwork-fallback">♪</span>}
+                <span><strong>{result.title}</strong><small>{result.artistName || result.collectionName || entityName}</small></span>
+                <b>选择</b>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {entity === 'artist' && <small class="music-search-note">歌手照片来自 TheAudioDB；支持大小写混输，并可按主名称或别名搜索。</small>}
+      {field === 'favoriteSong' && <small class="music-search-note">搜索只关联歌曲和封面，歌词请在下方手动填写。</small>}
     </div>
   );
 }
@@ -936,7 +1127,8 @@ async function compressAnswerImage(file: File) {
 function roomPosterPerson(roomId: string, answer: RevealedAnswer): PosterPerson {
   const imageUrls = { ...EMPTY_ANSWER_IMAGES } as Record<AnswerFieldKey, string | null>;
   for (const [key, imageKey] of Object.entries(answer.answer.imageKeys) as Array<[AnswerFieldKey, string | null]>) {
-    imageUrls[key] = imageKey ? `/api/rooms/${roomId}/media?key=${encodeURIComponent(imageKey)}` : null;
+    imageUrls[key] = musicArtworkProxyUrl(answer.answer.musicSelections[key]?.artworkUrl)
+      ?? (imageKey ? `/api/rooms/${roomId}/media?key=${encodeURIComponent(imageKey)}` : null);
   }
   return {
     nickname: answer.nickname,
@@ -1123,10 +1315,14 @@ function SingleInviteCardModal({ roomId, template, host, inviteUrl, joinCode, on
 function RevealedCard({ roomId, data, template }: { roomId: string; data: RevealedAnswer; template: RoomTemplate }) {
   function answerContent(key: AnswerFieldKey) {
     const imageKey = data.answer.imageKeys[key];
+    const music = data.answer.musicSelections[key];
+    const imageUrl = musicArtworkProxyUrl(music?.artworkUrl)
+      ?? (imageKey ? `/api/rooms/${roomId}/media?key=${encodeURIComponent(imageKey)}` : null);
     return (
       <dd>
-        {imageKey && <img class="revealed-answer-image" src={`/api/rooms/${roomId}/media?key=${encodeURIComponent(imageKey)}`} alt={`${template.fieldLabels[key]}的答案配图`} />}
-        <span>{data.answer[key] || (imageKey ? '' : '—')}</span>
+        {imageUrl && <img class="revealed-answer-image" src={imageUrl} alt={`${template.fieldLabels[key]}的答案配图`} />}
+        <span>{data.answer[key] || (imageUrl ? '' : '—')}</span>
+        {music && <MusicCredit selection={music} />}
       </dd>
     );
   }
@@ -1144,6 +1340,12 @@ function RevealedCard({ roomId, data, template }: { roomId: string; data: Reveal
       </dl>
     </article>
   );
+}
+
+function MusicCredit({ selection }: { selection: MusicSelection }) {
+  return selection.storeUrl ? (
+    <a class="music-credit" href={selection.storeUrl} target="_blank" rel="noreferrer">由 {musicProviderName(selection.provider)} 提供 · 查看详情 ↗</a>
+  ) : <small class="music-credit">由 {musicProviderName(selection.provider)} 提供</small>;
 }
 
 function ShareModal({ state, host, guest, onClose, onRefresh }: {

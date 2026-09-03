@@ -6,8 +6,8 @@ import type {
   ShareSnapshot,
   ShareStatus,
 } from '../lib/types';
-import { ANSWER_FIELD_KEYS, EMPTY_ANSWER_IMAGES } from '../lib/types';
-import { nowIso } from './db';
+import { ANSWER_FIELD_KEYS, EMPTY_ANSWER_IMAGES, EMPTY_MUSIC_SELECTIONS } from '../lib/types';
+import { nowIso, parseRoomTemplate } from './db';
 
 export const SHARE_ID_PATTERN = /^[a-z2-9]{24}$/;
 
@@ -41,7 +41,7 @@ function publicAnswer(
   answer: RevealedAnswer,
   assetIds: Map<string, string>,
 ): PublicAnswer {
-  const { avatarKey, imageKeys, ...textAnswer } = answer.answer;
+  const { avatarKey, imageKeys, musicSelections = EMPTY_MUSIC_SELECTIONS, ...textAnswer } = answer.answer;
   const imageUrls = { ...EMPTY_ANSWER_IMAGES } as AnswerImageUrlMap;
   for (const key of ANSWER_FIELD_KEYS) {
     const objectKey = imageKeys[key];
@@ -55,6 +55,7 @@ function publicAnswer(
     nickname: answer.nickname,
     answer: {
       ...textAnswer,
+      musicSelections: { ...EMPTY_MUSIC_SELECTIONS, ...musicSelections },
       avatarUrl: avatarAssetId ? `/api/shares/${shareId}/media/${avatarAssetId}` : '',
       imageUrls,
     },
@@ -86,7 +87,7 @@ export async function getPublicShareState(env: Env, shareId: string): Promise<Pu
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     posterUrl: `/api/shares/${shareId}/poster`,
-    template: snapshot.template,
+    template: parseRoomTemplate(JSON.stringify(snapshot.template)),
     host: publicAnswer(shareId, snapshot.host, assetIds),
     guest: publicAnswer(shareId, snapshot.guest, assetIds),
   };

@@ -26,6 +26,7 @@ describe('published share action', () => {
         joinCode="123456"
         publishedAnswer={null}
         onRecoverJoinCode={vi.fn()}
+        onEdit={vi.fn()}
       />,
       container,
     );
@@ -54,6 +55,7 @@ describe('published share action', () => {
         joinCode={null}
         publishedAnswer={null}
         onRecoverJoinCode={vi.fn()}
+        onEdit={vi.fn()}
       />,
       container,
     );
@@ -92,6 +94,7 @@ describe('published share action', () => {
         joinCode={null}
         publishedAnswer={null}
         onRecoverJoinCode={onRecoverJoinCode}
+        onEdit={vi.fn()}
       />,
       container,
     );
@@ -111,5 +114,34 @@ describe('published share action', () => {
   it('puts the join code in a URL fragment for the invitation QR', () => {
     expect(directJoinUrl('https://example.com/room/abc234def567', '654321'))
       .toBe('https://example.com/room/abc234def567#join=654321');
+  });
+
+  it('lets either published participant withdraw and edit without changing old shares', async () => {
+    const container = document.createElement('div');
+    const onEdit = vi.fn(async () => undefined);
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    document.body.appendChild(container);
+
+    render(
+      <PublishedConfirmation
+        slot={2}
+        roomId="abc234def567"
+        template={DEFAULT_ROOM_TEMPLATE}
+        inviteUrl="https://to-gather.tomori.xyz/room/abc234def567"
+        joinCode={null}
+        publishedAnswer={null}
+        onRecoverJoinCode={vi.fn()}
+        onEdit={onEdit}
+      />,
+      container,
+    );
+
+    const button = Array.from(container.querySelectorAll('button'))
+      .find((item) => item.textContent?.includes('修改已发布内容'));
+    button?.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(onEdit).toHaveBeenCalledOnce();
+    expect(container.textContent).toContain('已经生成的公开分享仍保留原内容');
   });
 });

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'preact/hooks';
 import type { AnswerFieldKey, PublicAnswer, PublicShareState, RoomTemplate } from '../lib/types';
 import { CARD_FIELDS } from '../lib/card';
+import { musicArtworkProxyUrl, musicProviderName } from '../lib/music';
 
 export default function ShareLoader({ shareId }: { shareId: string }) {
   const [state, setState] = useState<PublicShareState | null>(null);
@@ -82,11 +83,15 @@ function ShareView({ state }: { state: PublicShareState }) {
 
 function PublicAnswerCard({ data, template }: { data: PublicAnswer; template: RoomTemplate }) {
   function content(key: AnswerFieldKey) {
-    const imageUrl = data.answer.imageUrls[key];
+    const music = data.answer.musicSelections[key];
+    const imageUrl = musicArtworkProxyUrl(music?.artworkUrl) ?? data.answer.imageUrls[key];
     return (
       <dd>
         {imageUrl && <img src={imageUrl} alt={`${template.fieldLabels[key]}的答案配图`} loading="lazy" />}
         <span>{data.answer[key] || (imageUrl ? '' : '—')}</span>
+        {music && (music.storeUrl ? (
+          <a class="music-credit" href={music.storeUrl} target="_blank" rel="noreferrer">由 {musicProviderName(music.provider)} 提供 · 查看详情 ↗</a>
+        ) : <small class="music-credit">由 {musicProviderName(music.provider)} 提供</small>)}
       </dd>
     );
   }

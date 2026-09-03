@@ -1,8 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { buildSingleInvitePosterInput, calculateAnswerCellLayout } from '../src/lib/poster';
+import { buildSingleInvitePosterInput, calculateAnswerCellLayout, wrapText } from '../src/lib/poster';
 import { DEFAULT_ROOM_TEMPLATE, EMPTY_ANSWER_IMAGES, EMPTY_DRAFT } from '../src/lib/types';
 
 describe('poster answer cell layout', () => {
+  it('preserves explicit line breaks when wrapping poster answers', () => {
+    const context = {
+      measureText: (value: string) => ({ width: Array.from(value).length * 10 }),
+    } as CanvasRenderingContext2D;
+
+    expect(wrapText(context, '第一行\n第二行', 100, 3)).toEqual(['第一行', '第二行']);
+  });
+
   it('gives text-only square cells most of the available height', () => {
     const layout = calculateAnswerCellLayout(250, 250, false, true);
 

@@ -1,10 +1,11 @@
 import { useState } from 'preact/hooks';
 import { ALL_CARD_FIELDS } from '../lib/card';
-import type { CreateRoomResponse, RoomTemplate } from '../lib/types';
-import { DEFAULT_ROOM_TEMPLATE } from '../lib/types';
+import type { AnswerFieldKey, CreateRoomResponse, MusicFieldType, RoomTemplate, RoomVariant } from '../lib/types';
+import { DEFAULT_ROOM_TEMPLATE, MUSIC_ROOM_TEMPLATE } from '../lib/types';
 
-function freshTemplate(): RoomTemplate {
-  return { ...DEFAULT_ROOM_TEMPLATE, fieldLabels: { ...DEFAULT_ROOM_TEMPLATE.fieldLabels } };
+function freshTemplate(variant: RoomVariant = 'classic'): RoomTemplate {
+  const source = variant === 'music' ? MUSIC_ROOM_TEMPLATE : DEFAULT_ROOM_TEMPLATE;
+  return { ...source, fieldLabels: { ...source.fieldLabels }, fieldTypes: { ...source.fieldTypes } };
 }
 
 export default function HomeApp() {
@@ -13,7 +14,14 @@ export default function HomeApp() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const customized = JSON.stringify(template) !== JSON.stringify(DEFAULT_ROOM_TEMPLATE);
+  const defaultTemplate = template.variant === 'music' ? MUSIC_ROOM_TEMPLATE : DEFAULT_ROOM_TEMPLATE;
+  const customized = JSON.stringify(template) !== JSON.stringify(defaultTemplate);
+
+  function selectVariant(variant: RoomVariant) {
+    setTemplate(freshTemplate(variant));
+    setConfirming(false);
+    setError('');
+  }
 
   function updateTemplate<K extends 'title' | 'subtitle'>(key: K, value: RoomTemplate[K]) {
     setTemplate((current) => ({ ...current, [key]: value }));
@@ -23,6 +31,13 @@ export default function HomeApp() {
     setTemplate((current) => ({
       ...current,
       fieldLabels: { ...current.fieldLabels, [key]: value },
+    }));
+  }
+
+  function updateFieldType(key: AnswerFieldKey, value: MusicFieldType) {
+    setTemplate((current) => ({
+      ...current,
+      fieldTypes: { ...current.fieldTypes, [key]: value },
     }));
   }
 
@@ -82,6 +97,31 @@ export default function HomeApp() {
         <form class="create-card paper-panel" onSubmit={createRoom}>
           <span class="card-index">START HERE ↘</span>
           <h2>先占一个位置</h2>
+          <fieldset class="template-picker">
+            <legend>选一张要填的卡</legend>
+            <div>
+              <button
+                type="button"
+                class={template.variant === 'classic' ? 'template-option active' : 'template-option'}
+                aria-pressed={template.variant === 'classic'}
+                onClick={() => selectVariant('classic')}
+              >
+                <small>ORIGINAL / 01</small>
+                <strong>普通默契卡</strong>
+                <span>喜欢、期待和想说的话</span>
+              </button>
+              <button
+                type="button"
+                class={template.variant === 'music' ? 'template-option music active' : 'template-option music'}
+                aria-pressed={template.variant === 'music'}
+                onClick={() => selectVariant('music')}
+              >
+                <small>MUSIC / 02</small>
+                <strong>一起听卡片</strong>
+                <span>歌手、专辑和循环最多的歌</span>
+              </button>
+            </div>
+          </fieldset>
           <label for="creator-name">怎么称呼你？</label>
           <input
             id="creator-name"
@@ -94,15 +134,15 @@ export default function HomeApp() {
           />
 
           <details class="template-settings">
-            <summary>自定义卡片标题 <span>{customized ? '已修改' : '可选'}</span></summary>
+            <summary>自定义标题和字段 <span>{customized ? '已修改' : '可选'}</span></summary>
             <div class="template-editor">
               <label for="card-title">主标题 <small>{template.title.length}/24</small></label>
               <input id="card-title" value={template.title} maxLength={24} onInput={(event) => updateTemplate('title', event.currentTarget.value.replace(/[\r\n]/g, ''))} />
               <label for="card-subtitle">副标题 <small>{template.subtitle.length}/40</small></label>
               <input id="card-subtitle" value={template.subtitle} maxLength={40} onInput={(event) => updateTemplate('subtitle', event.currentTarget.value.replace(/[\r\n]/g, ''))} />
-              <div class="template-labels">
+              <div class={template.variant === 'music' ? 'template-labels music-field-types' : 'template-labels'}>
                 {ALL_CARD_FIELDS.map((key, index) => (
-                  <label key={key}>
+                  <label class={template.variant === 'music' ? 'with-field-type' : ''} key={key}>
                     <span>{String(index + 1).padStart(2, '0')}</span>
                     <input
                       value={template.fieldLabels[key]}
@@ -110,17 +150,29 @@ export default function HomeApp() {
                       aria-label={`第 ${index + 1} 个字段标题`}
                       onInput={(event) => updateLabel(key, event.currentTarget.value.replace(/[\r\n]/g, ''))}
                     />
+                    {template.variant === 'music' && (
+                      <select
+                        value={template.fieldTypes[key]}
+                        aria-label={`第 ${index + 1} 个字段类型`}
+                        onChange={(event) => updateFieldType(key, event.currentTarget.value as MusicFieldType)}
+                      >
+                        <option value="artist">歌手</option>
+                        <option value="song">歌曲</option>
+                        <option value="album">专辑</option>
+                        <option value="custom">自定义</option>
+                      </select>
+                    )}
                   </label>
                 ))}
               </div>
-              <button type="button" class="text-button" onClick={() => setTemplate(freshTemplate())}>恢复默认标题</button>
+              <button type="button" class="text-button" onClick={() => setTemplate(freshTemplate(template.variant))}>恢复这张卡的默认文案</button>
               <p>房间创建后，以上标题会固定并用于双方填写、结果和分享。</p>
             </div>
           </details>
 
           {error && <p class="form-error" role="alert">{error}</p>}
           <button class="button button-accent" type="submit" disabled={loading}>
-            {loading ? '正在铺开卡片…' : '创建双人卡片'}<span aria-hidden="true">→</span>
+            {loading ? '正在铺开卡片…' : template.variant === 'music' ? '创建一起听卡片' : '创建双人卡片'}<span aria-hidden="true">→</span>
           </button>
           <p class="microcopy">无需注册。创建后可用同一链接、二维码和加入码邀请最多 20 位二号。</p>
         </form>

@@ -108,23 +108,46 @@ async function loadBitmap(url: string) {
   return createImageBitmap(await response.blob());
 }
 
-function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number) {
-  const source = Array.from(text || '—');
+export function wrapText(ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number) {
+  const paragraphs = (text || '—').replace(/\r\n?/g, '\n').split('\n');
   const lines: string[] = [];
-  let current = '';
-  for (const character of source) {
-    const candidate = current + character;
-    if (ctx.measureText(candidate).width <= maxWidth || !current) {
-      current = candidate;
+  let truncated = false;
+
+  outer: for (const [paragraphIndex, paragraph] of paragraphs.entries()) {
+    const source = Array.from(paragraph);
+    if (!source.length) {
+      if (lines.length < maxLines) lines.push('');
+      else truncated = true;
+      if (truncated) break;
       continue;
     }
-    lines.push(current);
-    current = character;
-    if (lines.length === maxLines) break;
+
+    let current = '';
+    for (const character of source) {
+      const candidate = current + character;
+      if (ctx.measureText(candidate).width <= maxWidth || !current) {
+        current = candidate;
+        continue;
+      }
+      if (lines.length >= maxLines - 1) {
+        lines.push(current);
+        truncated = true;
+        break outer;
+      }
+      lines.push(current);
+      current = character;
+    }
+    if (current) {
+      if (lines.length < maxLines) lines.push(current);
+      else truncated = true;
+    }
+    if (paragraphIndex < paragraphs.length - 1 && lines.length >= maxLines) {
+      truncated = true;
+      break;
+    }
   }
-  if (lines.length < maxLines && current) lines.push(current);
-  const consumed = lines.join('').length;
-  if (consumed < source.length && lines.length) {
+
+  if (truncated && lines.length) {
     let last = lines.at(-1) ?? '';
     while (last && ctx.measureText(`${last}…`).width > maxWidth) last = last.slice(0, -1);
     lines[lines.length - 1] = `${last}…`;
@@ -456,7 +479,11 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   );
   ctx.font = '800 17px system-ui, sans-serif';
   ctx.fillStyle = '#706d65';
-  ctx.fillText('TO-GATHER · 30 DAYS', 190, footerY + 176);
+  ctx.fillText(
+    input.template.variant === 'music' ? 'TO-GATHER · MUSIC DATA BY TheAudioDB / iTunes · 30 DAYS' : 'TO-GATHER · 30 DAYS',
+    190,
+    footerY + 176,
+  );
 
   const qrX = 1300;
   const qrY = footerY + 8;

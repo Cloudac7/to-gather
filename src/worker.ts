@@ -53,15 +53,26 @@ import {
 } from './server/shares';
 import { forkAnswerMedia } from './server/room-fork';
 import { musicArtworkApi, musicSearchApi } from './server/music';
+import { maxRoomGuests } from './server/config';
 
 const ROOM_PATH = /^\/api\/rooms\/([a-z2-9]{12})(?:\/(.*))?$/;
 const SHARE_PATH = /^\/api\/shares\/([a-z2-9]{24})(?:\/(.*))?$/;
-const MAX_GUESTS = 20;
+const MUSIC_SEARCH_RATE_LIMIT = 30;
+const MUSIC_SEARCH_RATE_WINDOW_MS = 60_000;
 const SHARE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PENDING_SHARE_TTL_MS = 60 * 60 * 1000;
 
 function coordinator(env: Env, roomId: string) {
   return env.ROOMS.get(env.ROOMS.idFromName(roomId));
+}
+
+async function enforceMusicSearchRateLimit(request: Request, env: Env, roomId: string) {
+  const clientIp = request.headers.get('CF-Connecting-IP') ?? 'local';
+  const clientKey = await hashSecret(`${roomId}:${clientIp}`, env.AUTH_PEPPER);
+  const response = await coordinator(env, `music-search:${clientKey}`).fetch(
+    new Request('https://room.internal/music-search-rate', { method: 'POST' }),
+  );
+  if (!response.ok) throw new HttpError(429, '音乐搜索过于频繁，请稍后再试', 'rate_limited');
 }
 
 function secureHeaders(response: Response) {
@@ -773,7 +784,9 @@ async function roomApi(request: Request, env: Env, roomId: string, tail = ''): P
 
 async function apiFetch(request: Request, env: Env, ctx: ExecutionContext) {
   const url = new URL(request.url);
-  if (url.pathname === '/api/music/search') return musicSearchApi(request, ctx);
+  if (url.pathname === '/api/music/search') {
+    return musicSearchApi(request, ctx, (roomId) => enforceMusicSearchRateLimit(request, env, roomId));
+  }
   if (url.pathname === '/api/music/artwork') return musicArtworkApi(request, ctx);
   if (request.method === 'POST' && url.pathname === '/api/rooms') return createRoom(request, env);
   const shareMatch = url.pathname.match(SHARE_PATH);
@@ -852,6 +865,7 @@ export class RoomCoordinator extends DurableObject<Env> {
   async fetch(request: Request): Promise<Response> {
     try {
       const path = new URL(request.url).pathname;
+      if (path === '/music-search-rate') return this.rateLimitMusicSearch();
       if (path === '/ws') return this.connectWebSocket(request);
       if (path === '/join') return this.join(request);
       const participantId = request.headers.get('X-Participant-Id');
@@ -868,6 +882,28 @@ export class RoomCoordinator extends DurableObject<Env> {
       if (error instanceof ZodError) return json({ error: 'validation_error', message: '填写内容格式不正确' }, { status: 400 });
       return errorResponse(error);
     }
+  }
+
+  private async rateLimitMusicSearch() {
+    const now = Date.now();
+    const key = 'music-search-rate';
+    const rate = (await this.ctx.storage.get<{ count: number; resetAt: number }>(key)) ?? {
+      count: 0,
+      resetAt: now + MUSIC_SEARCH_RATE_WINDOW_MS,
+    };
+    if (rate.resetAt <= now) {
+      rate.count = 0;
+      rate.resetAt = now + MUSIC_SEARCH_RATE_WINDOW_MS;
+    }
+    if (rate.count >= MUSIC_SEARCH_RATE_LIMIT) {
+      return json({ error: 'rate_limited' }, {
+        status: 429,
+        headers: { 'Retry-After': String(Math.max(1, Math.ceil((rate.resetAt - now) / 1_000))) },
+      });
+    }
+    rate.count += 1;
+    await this.ctx.storage.put(key, rate);
+    return json({ allowed: true });
   }
 
   private connectWebSocket(request: Request) {
@@ -956,7 +992,7 @@ export class RoomCoordinator extends DurableObject<Env> {
     )
       .bind(roomId)
       .first<{ count: number }>();
-    if ((guestCount?.count ?? 0) >= MAX_GUESTS) {
+    if ((guestCount?.count ?? 0) >= maxRoomGuests(this.env)) {
       throw new HttpError(409, '这个房间的二号人数已满', 'room_full');
     }
 

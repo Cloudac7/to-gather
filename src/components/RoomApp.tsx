@@ -706,6 +706,7 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
               <span><b>{String(index + 1).padStart(2, '0')}</b>{state.template.fieldLabels[field.key]}</span>
               {state.template.variant === 'music' && state.template.fieldTypes[field.key] !== 'custom' && (
                 <MusicSearchField
+                  roomId={state.roomId}
                   field={field.key}
                   entity={state.template.fieldTypes[field.key] as MusicEntityKind}
                   selection={draft.musicSelections[field.key]}
@@ -736,6 +737,7 @@ function FillView({ state, onRefresh, inviteUrl, joinCode, onRecoverJoinCode }: 
             <span><b>09</b>{state.template.fieldLabels.message}</span>
             {state.template.variant === 'music' && state.template.fieldTypes.message !== 'custom' && (
               <MusicSearchField
+                roomId={state.roomId}
                 field="message"
                 entity={state.template.fieldTypes.message}
                 selection={draft.musicSelections.message}
@@ -944,7 +946,8 @@ function AnswerImageEditor({ roomId, field, imageKey, busy, onFile, onRemove }: 
   );
 }
 
-function MusicSearchField({ field, entity, selection, disabled, onSelect, onClear }: {
+function MusicSearchField({ roomId, field, entity, selection, disabled, onSelect, onClear }: {
+  roomId: string;
   field: AnswerFieldKey;
   entity: MusicEntityKind;
   selection: MusicSelection | null;
@@ -972,12 +975,16 @@ function MusicSearchField({ field, entity, selection, disabled, onSelect, onClea
     setLoading(true);
     const timer = window.setTimeout(() => {
       setError('');
-      const search = entity === 'artist'
-        ? api<MusicSearchResponse>(
-          `/api/music/search?${new URLSearchParams({ term, entity }).toString()}`,
-          { signal: controller.signal },
-        )
-        : searchItunesMusic(term, entity, controller.signal).then((results) => ({ results }));
+      const search = api<MusicSearchResponse>(
+        `/api/music/search?${new URLSearchParams({ term, entity, roomId }).toString()}`,
+        { signal: controller.signal },
+      ).then(async (payload) => {
+        if (payload.results.length || entity === 'artist') return payload;
+        return { results: await searchItunesMusic(term, entity, controller.signal) };
+      }).catch(async (caught) => {
+        if (controller.signal.aborted || entity === 'artist') throw caught;
+        return { results: await searchItunesMusic(term, entity, controller.signal) };
+      });
       void search.then((payload) => {
         if (stopped) return;
         setResults(payload.results);
@@ -995,7 +1002,7 @@ function MusicSearchField({ field, entity, selection, disabled, onSelect, onClea
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [query, entity]);
+  }, [query, entity, roomId]);
 
   if (selection) {
     const artwork = musicArtworkProxyUrl(selection.artworkUrl);
@@ -1063,8 +1070,8 @@ function MusicSearchField({ field, entity, selection, disabled, onSelect, onClea
       )}
       <small class="music-search-note">
         {entity === 'artist'
-          ? '歌手资料来自 TheAudioDB。'
-          : `${entityName}和封面来自 iTunes 香港目录，并由你的浏览器直接搜索。`}
+          ? '歌手优先来自 QQ 音乐，找不到时回退 TheAudioDB。'
+          : `${entityName}优先来自 QQ 音乐，找不到时回退 iTunes 中国大陆及香港目录。`}
       </small>
       {field === 'favoriteSong' && <small class="music-search-note">搜索只关联歌曲和封面，歌词请在下方手动填写。</small>}
     </div>

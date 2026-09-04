@@ -14,6 +14,7 @@ const nullableArtworkUrl = z.url().max(600).refine((value) => {
     || url.hostname === 'r2.theaudiodb.com'
     || url.hostname === 'mzstatic.com'
     || url.hostname.endsWith('.mzstatic.com')
+    || url.hostname === 'y.gtimg.cn'
   );
 }, { message: '封面地址无效' }).nullable();
 
@@ -30,8 +31,8 @@ export const answerImagesSchema = z.object({
 }).strict();
 
 export const musicSelectionSchema = z.object({
-  provider: z.enum(['itunes', 'theaudiodb']),
-  id: z.number().int().nonnegative(),
+  provider: z.enum(['qqmusic', 'itunes', 'theaudiodb']),
+  id: z.union([z.number().int().nonnegative(), z.string().trim().min(1).max(80)]),
   kind: z.enum(['artist', 'album', 'song']),
   title: z.string().trim().min(1).max(160),
   artistName: z.string().trim().max(160),

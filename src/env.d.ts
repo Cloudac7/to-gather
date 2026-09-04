@@ -7,4 +7,5 @@ declare interface Env {
   ASSETS: Fetcher;
   AUTH_PEPPER: string;
   APP_ENV?: string;
+  MAX_ROOM_GUESTS?: string;
 }

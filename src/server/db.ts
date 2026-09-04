@@ -10,6 +10,7 @@ import type {
   ShareStatus,
   ShareSummary,
 } from '../lib/types';
+import { maxRoomGuests } from './config';
 import {
   createEmptyDraft,
   DEFAULT_ROOM_TEMPLATE,
@@ -173,7 +174,7 @@ export async function buildRoomState(
 
   if (!participant) {
     const guestCount = people.filter((person) => person.slot === 2).length;
-    return { access: guestCount >= 20 ? 'full' : 'joinable', roomId };
+    return { access: guestCount >= maxRoomGuests(env) ? 'full' : 'joinable', roomId };
   }
 
   // 一号可以管理整个房间；每个二号只和一号构成独立配对，

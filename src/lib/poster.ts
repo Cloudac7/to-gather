@@ -1,6 +1,7 @@
 import QRCode from 'qrcode';
 import type { AnswerDraft, AnswerFieldKey, RoomTemplate } from './types';
 import { createEmptyDraft, EMPTY_ANSWER_IMAGES } from './types';
+import { DISPLAY_FONT_STACK, UI_FONT_STACK } from './fonts';
 
 export interface PosterPerson {
   nickname: string;
@@ -264,7 +265,7 @@ function drawAnswerCell(
 
   const padding = compact ? 12 : 16;
   ctx.fillStyle = '#706d65';
-  ctx.font = `800 ${compact ? 15 : 18}px system-ui, sans-serif`;
+  ctx.font = `800 ${compact ? 15 : 18}px ${UI_FONT_STACK}`;
   ctx.textBaseline = 'top';
   ctx.fillText(chars(template.fieldLabels[key], compact ? 9 : 12), x + padding, y + padding);
 
@@ -278,7 +279,7 @@ function drawAnswerCell(
     drawImage(ctx, loaded.bitmap, loaded.width, loaded.height, x + imageBox.left, y + imageBox.top, imageBox.width, imageBox.height);
     if (answer) {
       ctx.fillStyle = INK;
-      ctx.font = `800 ${layout.textFontSize}px 'Songti SC', 'STSong', serif`;
+      ctx.font = `800 ${layout.textFontSize}px ${DISPLAY_FONT_STACK}`;
       drawTextLines(
         ctx,
         answer,
@@ -291,7 +292,7 @@ function drawAnswerCell(
     }
   } else if (!person.blank) {
     ctx.fillStyle = INK;
-    ctx.font = `800 ${layout.textFontSize}px 'Songti SC', 'STSong', serif`;
+    ctx.font = `800 ${layout.textFontSize}px ${DISPLAY_FONT_STACK}`;
     drawTextLines(
       ctx,
       answer || '—',
@@ -329,7 +330,7 @@ function drawPortrait(
     ctx.fillStyle = 'rgba(17,17,15,.82)';
     ctx.fillRect(x, y + height - 74, width, 74);
     ctx.fillStyle = PAPER;
-    ctx.font = "900 32px 'Songti SC', 'STSong', serif";
+    ctx.font = `900 32px ${DISPLAY_FONT_STACK}`;
     ctx.textBaseline = 'middle';
     ctx.fillText(chars(person.nickname, 12), x + 22, y + height - 38);
   }
@@ -369,9 +370,9 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   ctx.fillStyle = INK;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
-  ctx.font = "900 62px 'Noto Serif SC', 'Songti SC', 'STSong', serif";
+  ctx.font = `900 62px ${DISPLAY_FONT_STACK}`;
   ctx.fillText(chars(input.template.title, 24), WIDTH / 2, 38);
-  ctx.font = '700 23px system-ui, sans-serif';
+  ctx.font = `700 23px ${UI_FONT_STACK}`;
   ctx.fillText(chars(input.template.subtitle, 40), WIDTH / 2, 112);
   ctx.textAlign = 'left';
 
@@ -460,14 +461,14 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
   ctx.fillStyle = PAPER;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
-  ctx.font = "900 52px 'Songti SC', 'STSong', serif";
+  ctx.font = `900 52px ${DISPLAY_FONT_STACK}`;
   ctx.fillText('两', 116, footerY + 76);
   ctx.textAlign = 'left';
   ctx.textBaseline = 'top';
   ctx.fillStyle = INK;
-  ctx.font = "900 44px 'Songti SC', 'STSong', serif";
+  ctx.font = `900 44px ${DISPLAY_FONT_STACK}`;
   ctx.fillText('一起揭晓', 190, footerY + 32);
-  ctx.font = '700 22px system-ui, sans-serif';
+  ctx.font = `700 22px ${UI_FONT_STACK}`;
   drawTextLines(
     ctx,
     input.footerDescription ?? '把喜欢、期待和想说的话，做成只属于你们的双人卡片。',
@@ -477,10 +478,10 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
     2,
     34,
   );
-  ctx.font = '800 17px system-ui, sans-serif';
+  ctx.font = `800 17px ${UI_FONT_STACK}`;
   ctx.fillStyle = '#706d65';
   ctx.fillText(
-    input.template.variant === 'music' ? 'TO-GATHER · MUSIC DATA BY TheAudioDB / iTunes · 30 DAYS' : 'TO-GATHER · 30 DAYS',
+    input.template.variant === 'music' ? 'TO-GATHER · MUSIC DATA BY QQ MUSIC / TheAudioDB / iTunes · 30 DAYS' : 'TO-GATHER · 30 DAYS',
     190,
     footerY + 176,
   );
@@ -509,14 +510,14 @@ export async function generatePoster(input: PosterInput): Promise<Blob> {
     ctx.fillStyle = INK;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    ctx.font = '800 20px system-ui, sans-serif';
+    ctx.font = `800 20px ${UI_FONT_STACK}`;
     ctx.fillText('确认公开后', qrX + qrSize / 2, qrY + 82);
     ctx.fillText('生成二维码', qrX + qrSize / 2, qrY + 112);
   }
   ctx.textAlign = 'center';
   ctx.textBaseline = 'top';
   ctx.fillStyle = INK;
-  ctx.font = '800 16px system-ui, sans-serif';
+  ctx.font = `800 16px ${UI_FONT_STACK}`;
   ctx.fillText(input.qrCaption ?? '扫码查看完整结果', qrX + qrSize / 2, qrY + qrSize + 12);
 
   for (const image of images.values()) image.bitmap.close();

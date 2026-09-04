@@ -51,6 +51,7 @@ export function musicArtworkProxyUrl(artworkUrl: string | null | undefined) {
 }
 
 export function musicProviderName(provider: MusicProvider) {
+  if (provider === 'qqmusic') return 'QQ 音乐';
   return provider === 'theaudiodb' ? 'TheAudioDB' : 'iTunes';
 }
 
@@ -85,13 +86,17 @@ export function normalizeItunesResult(result: ItunesResult, kind: MusicEntityKin
   };
 }
 
-export function buildItunesSearchUrl(term: string, entity: Exclude<MusicEntityKind, 'artist'>) {
+export function buildItunesSearchUrl(
+  term: string,
+  entity: Exclude<MusicEntityKind, 'artist'>,
+  country: 'CN' | 'HK' = 'CN',
+) {
   const url = new URL('https://itunes.apple.com/search');
   url.search = new URLSearchParams({
     term: term.normalize('NFKC').trim().replace(/\s+/g, ' '),
     media: 'music',
     entity,
-    country: 'HK',
+    country,
     limit: String(ITUNES_SEARCH_LIMIT),
   }).toString();
   return url;
@@ -118,11 +123,21 @@ export async function searchItunesMusic(
   entity: Exclude<MusicEntityKind, 'artist'>,
   signal?: AbortSignal,
 ) {
-  const response = await fetch(buildItunesSearchUrl(term, entity), {
-    headers: { Accept: 'application/json' },
-    signal,
-  });
-  if (response.status === 429) throw new Error('iTunes 搜索过于频繁，请稍后再试');
-  if (!response.ok) throw new Error('iTunes 搜索暂时不可用');
-  return parseItunesSearchBody(await response.text(), entity);
+  async function search(country: 'CN' | 'HK') {
+    const response = await fetch(buildItunesSearchUrl(term, entity, country), {
+      headers: { Accept: 'application/json' },
+      signal,
+    });
+    if (response.status === 429) throw new Error('iTunes 搜索过于频繁，请稍后再试');
+    if (!response.ok) throw new Error('iTunes 搜索暂时不可用');
+    return parseItunesSearchBody(await response.text(), entity);
+  }
+
+  try {
+    const mainlandResults = await search('CN');
+    if (mainlandResults.length) return mainlandResults;
+  } catch (error) {
+    if (signal?.aborted) throw error;
+  }
+  return search('HK');
 }

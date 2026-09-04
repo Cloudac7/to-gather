@@ -46,6 +46,7 @@
     ]
   },
   "vars": {
-    "APP_ENV": "production"
+    "APP_ENV": "production",
+    "MAX_ROOM_GUESTS": "50"
   }
 }

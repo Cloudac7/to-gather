@@ -28,11 +28,11 @@ export type AnswerImageUrlMap = Record<AnswerFieldKey, string | null>;
 export type RoomVariant = 'classic' | 'music';
 export type MusicEntityKind = 'artist' | 'album' | 'song';
 export type MusicFieldType = MusicEntityKind | 'custom';
-export type MusicProvider = 'itunes' | 'theaudiodb';
+export type MusicProvider = 'qqmusic' | 'itunes' | 'theaudiodb';
 
 export interface MusicSelection {
   provider: MusicProvider;
-  id: number;
+  id: number | string;
   kind: MusicEntityKind;
   title: string;
   artistName: string;

@@ -20,7 +20,7 @@ import type {
 } from '../lib/types';
 import { createEmptyDraft, EMPTY_ANSWER_IMAGES } from '../lib/types';
 import { CARD_FIELDS } from '../lib/card';
-import { musicArtworkProxyUrl, musicProviderName, musicSelectionText } from '../lib/music';
+import { musicArtworkProxyUrl, musicProviderName, musicSelectionText, searchItunesMusic } from '../lib/music';
 import { buildSingleInvitePosterInput, generatePoster, type PosterInput, type PosterPerson } from '../lib/poster';
 
 interface Props {
@@ -972,10 +972,13 @@ function MusicSearchField({ field, entity, selection, disabled, onSelect, onClea
     setLoading(true);
     const timer = window.setTimeout(() => {
       setError('');
-      void api<MusicSearchResponse>(
-        `/api/music/search?${new URLSearchParams({ term, entity }).toString()}`,
-        { signal: controller.signal },
-      ).then((payload) => {
+      const search = entity === 'artist'
+        ? api<MusicSearchResponse>(
+          `/api/music/search?${new URLSearchParams({ term, entity }).toString()}`,
+          { signal: controller.signal },
+        )
+        : searchItunesMusic(term, entity, controller.signal).then((results) => ({ results }));
+      void search.then((payload) => {
         if (stopped) return;
         setResults(payload.results);
         setOpen(true);
@@ -1058,7 +1061,11 @@ function MusicSearchField({ field, entity, selection, disabled, onSelect, onClea
           })}
         </div>
       )}
-      <small class="music-search-note">音乐目录来自 TheAudioDB；支持大小写混输。部分歌曲可能没有封面，但仍可选择并保存文字信息。</small>
+      <small class="music-search-note">
+        {entity === 'artist'
+          ? '歌手资料来自 TheAudioDB。'
+          : `${entityName}和封面来自 iTunes 香港目录，并由你的浏览器直接搜索。`}
+      </small>
       {field === 'favoriteSong' && <small class="music-search-note">搜索只关联歌曲和封面，歌词请在下方手动填写。</small>}
     </div>
   );

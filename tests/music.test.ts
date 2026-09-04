@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { MUSIC_FIELD_ENTITIES, musicArtworkProxyUrl, musicSelectionText } from '../src/lib/music';
+import {
+  buildItunesSearchUrl,
+  MUSIC_FIELD_ENTITIES,
+  musicArtworkProxyUrl,
+  musicSelectionText,
+  normalizeItunesResult,
+  parseItunesSearchBody,
+} from '../src/lib/music';
 import { MUSIC_ROOM_TEMPLATE } from '../src/lib/types';
 import { answerSchema, hasMinimumAnswer } from '../src/lib/validation';
 import { parseAnswer, parseRoomTemplate } from '../src/server/db';
-import {
-  isAllowedArtworkUrl,
-  normalizeAudioDbAlbum,
-  normalizeAudioDbArtist,
-  normalizeAudioDbTrack,
-  normalizeItunesResult,
-  normalizeMusicSearchTerm,
-} from '../src/server/music';
+import { isAllowedArtworkUrl, normalizeAudioDbArtist, normalizeMusicSearchTerm, parseAudioDbArtistSearchBody } from '../src/server/music';
 
 const song = {
   provider: 'itunes' as const,
@@ -63,6 +63,18 @@ describe('music room preset', () => {
 });
 
 describe('music result normalization and artwork safety', () => {
+  it('treats TheAudioDB empty successful artist response as no results', () => {
+    expect(parseAudioDbArtistSearchBody(new Uint8Array())).toEqual([]);
+  });
+
+  it('builds direct iTunes searches against the Hong Kong storefront', () => {
+    const songUrl = buildItunesSearchUrl('  Ｃｏｌｄｐｌａｙ   Yellow ', 'song');
+    expect(songUrl.origin).toBe('https://itunes.apple.com');
+    expect(songUrl.searchParams.get('term')).toBe('Coldplay Yellow');
+    expect(songUrl.searchParams.get('entity')).toBe('song');
+    expect(songUrl.searchParams.get('country')).toBe('HK');
+  });
+
   it('uses a real TheAudioDB artist photo instead of an album cover', () => {
     expect(normalizeAudioDbArtist({
       idArtist: '111239',
@@ -101,29 +113,15 @@ describe('music result normalization and artwork safety', () => {
     }, 'song')).toEqual(song);
   });
 
-  it('normalizes TheAudioDB album and track results', () => {
-    expect(normalizeAudioDbAlbum({
-      idAlbum: '123',
-      idArtist: '456',
-      strAlbum: '  Parachutes ',
-      strArtist: 'Coldplay',
-      strAlbumThumb: 'https://r2.theaudiodb.com/images/media/album/thumb/parachutes.jpg',
-    })).toMatchObject({
-      provider: 'theaudiodb', id: 123, kind: 'album', title: 'Parachutes',
-      artistName: 'Coldplay', artworkUrl: 'https://r2.theaudiodb.com/images/media/album/thumb/parachutes.jpg',
-    });
-    expect(normalizeAudioDbTrack({
-      idTrack: '789',
-      idAlbum: '123',
-      idArtist: '456',
-      strTrack: ' Yellow ',
-      strAlbum: 'Parachutes',
-      strArtist: 'Coldplay',
-      strTrackThumb: null,
-    })).toMatchObject({
-      provider: 'theaudiodb', id: 789, kind: 'song', title: 'Yellow',
-      artistName: 'Coldplay', collectionName: 'Parachutes', artworkUrl: null,
-    });
+  it('parses and validates an iTunes search response', () => {
+    expect(parseItunesSearchBody(JSON.stringify({ results: [{
+      trackId: 42,
+      trackName: '夜曲',
+      artistName: '周杰伦',
+      collectionName: '十一月的萧邦',
+      artworkUrl100: 'https://is1-ssl.mzstatic.com/image/thumb/example/100x100bb.jpg',
+      trackViewUrl: 'https://music.apple.com/cn/album/example/42',
+    }] }), 'song')).toEqual([song]);
   });
 
   it('only proxies HTTPS artwork from the configured music image hosts', () => {

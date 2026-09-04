@@ -11,7 +11,7 @@ export default defineConfig({
       directives: [
         "default-src 'self'",
         "img-src 'self' data: blob:",
-        "connect-src 'self' ws: wss:",
+        "connect-src 'self' https://itunes.apple.com ws: wss:",
         "font-src 'self'",
         "base-uri 'none'",
         "frame-ancestors 'none'",
